@@ -1,0 +1,53 @@
+name: Arsenal Audit Part 2 - Player vs Opta
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Checkout Analysis-App
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install audit dependencies
+        run: python -m pip install duckdb boto3 pandas
+
+      - name: Run Arsenal player-level R2 vs Opta audit read-only
+        run: python v2/audit_arsenal_players_vs_opta.py
+
+      - name: Show metric summary
+        if: always()
+        run: |
+          echo '=== METRIC SUMMARY ==='
+          cat arsenal-player-audit/metric_summary.csv || true
+          echo
+          echo '=== UNMATCHED / AUDIT SUMMARY ==='
+          cat arsenal-player-audit/audit_summary.json || true
+
+      - name: Upload Arsenal Part 2 audit evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arsenal-player-vs-opta-audit-${{ github.run_id }}
+          path: arsenal-player-audit/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Confirm read-only behavior
+        if: always()
+        run: echo 'Part 2 audit complete. No R2 write, upload, copy, delete, promotion, mutation, deployment, or backfill step exists.'
