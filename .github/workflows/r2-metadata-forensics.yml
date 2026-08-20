@@ -1,0 +1,59 @@
+name: R2 Metadata Forensics
+
+on:
+  workflow_dispatch:
+    inputs:
+      r2_key:
+        description: R2 DuckDB object key to inspect
+        required: true
+        default: football/staging/2025-26-whoscored-cards.duckdb
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-metadata-forensics
+  cancel-in-progress: false
+
+jobs:
+  forensic-audit:
+    name: Read-only WhoScored metadata forensics
+    runs-on: ubuntu-24.04
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Validate required R2 secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
+      - name: Inspect WhoScored metadata fidelity
+        run: |
+          python -m v2.forensics_r2_metadata \
+            --key '${{ inputs.r2_key }}' \
+            --report /tmp/r2-metadata-forensics.json
+      - name: Upload forensic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-metadata-forensics
+          path: /tmp/r2-metadata-forensics.json
+          retention-days: 14
+          if-no-files-found: error
+      - name: Confirm read-only behavior
+        run: echo 'Read-only forensic audit complete. No R2 upload, copy, delete, promotion, or database mutation step exists.'
