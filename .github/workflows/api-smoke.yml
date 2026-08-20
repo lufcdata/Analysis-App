@@ -45,3 +45,35 @@ jobs:
           assert count_progressive_passes([event], team_id="team-a") == 1
           print("canonical spatial contract OK")
           PY
+      - name: Verify older snapshot match inventory compatibility
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import duckdb
+          from v2.match_inventory import get_match_inventory
+
+          with tempfile.TemporaryDirectory() as tmp:
+              db = Path(tmp) / "old.duckdb"
+              conn = duckdb.connect(str(db))
+              conn.execute("CREATE TABLE seasons (season_id VARCHAR, season_name VARCHAR)")
+              conn.execute("CREATE TABLE teams (team_id VARCHAR, team_name VARCHAR)")
+              conn.execute("CREATE TABLE matches (match_id VARCHAR, season_id VARCHAR, match_date DATE, home_team_id VARCHAR, away_team_id VARCHAR)")
+              conn.execute("INSERT INTO seasons VALUES ('s1', '2025/26')")
+              conn.execute("INSERT INTO teams VALUES ('h', 'Leeds United'), ('a', 'Arsenal')")
+              conn.execute("INSERT INTO matches VALUES ('m1', 's1', DATE '2026-01-01', 'h', 'a')")
+              conn.close()
+
+              payload = get_match_inventory(db_path=db)
+              assert payload['matchday_available'] is False
+              assert len(payload['matches']) == 1
+              match = payload['matches'][0]
+              assert match['match_id'] == 'm1'
+              assert match['kickoff_time'] is None
+              assert match['home_score'] is None
+              assert match['away_score'] is None
+              assert match['status'] is None
+              assert match['whoscored_ingested'] is False
+              assert match['sofascore_ingested'] is False
+              print("older snapshot inventory compatibility OK")
+          PY
