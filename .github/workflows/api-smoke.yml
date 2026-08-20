@@ -1,0 +1,47 @@
+name: LUFCDATA API smoke
+
+on:
+  push:
+    branches:
+      - build/lufcdata-v2-api
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Compile runtime
+        run: python -m compileall -q app.py v2
+      - name: Import standalone app
+        run: python -c "from app import app; print(app.url_map)"
+      - name: Verify spatial metric contract
+        run: |
+          python - <<'PY'
+          from v2.spatial_plot_data import canonical_to_portrait
+          from v2.canonical_progressive_pass_metrics import count_progressive_passes
+
+          assert canonical_to_portrait(100, 50) == (50.0, 0.0)
+          assert canonical_to_portrait(0, 50) == (50.0, 100.0)
+
+          event = {
+              "eventId": "smoke-pass-1",
+              "type": {"id": 1, "displayName": "Pass"},
+              "period": {"displayName": "FirstHalf"},
+              "outcomeType": {"id": 1, "displayName": "Successful"},
+              "teamId": "team-a",
+              "playerId": "player-a",
+              "x": 50,
+              "y": 50,
+              "qualifiers": [
+                  {"type": {"displayName": "PassEndX"}, "value": "80"},
+                  {"type": {"displayName": "PassEndY"}, "value": "50"},
+              ],
+          }
+          assert count_progressive_passes([event], team_id="team-a") == 1
+          print("canonical spatial contract OK")
+          PY
