@@ -157,3 +157,51 @@ jobs:
               assert progressive is not None and float(progressive[0]) == 1.0
               print('Metrics Bible production materialization OK')
           PY
+      - name: Verify raw WhoScored spatial player payload
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          import duckdb
+
+          from v2.spatial_plot_data import build_match_spatial_payload
+
+          with tempfile.TemporaryDirectory() as tmp:
+              db = Path(tmp) / "spatial.duckdb"
+              conn = duckdb.connect(str(db))
+              conn.execute("CREATE TABLE teams (team_id VARCHAR, team_name VARCHAR)")
+              conn.execute("CREATE TABLE players (player_id VARCHAR, player_name VARCHAR)")
+              conn.execute("CREATE TABLE matches (match_id VARCHAR, match_date DATE, home_team_id VARCHAR, away_team_id VARCHAR)")
+              conn.execute("CREATE TABLE player_match_stats (match_id VARCHAR, player_id VARCHAR, team_id VARCHAR, mins_played DOUBLE)")
+              conn.execute("""CREATE TABLE match_events (
+                  event_id VARCHAR, match_id VARCHAR, team_id VARCHAR, player_id VARCHAR,
+                  source VARCHAR, event_type VARCHAR, period VARCHAR, minute INTEGER,
+                  expanded_minute INTEGER, second INTEGER, time_seconds INTEGER,
+                  x DOUBLE, y DOUBLE, end_x DOUBLE, end_y DOUBLE, outcome BOOLEAN,
+                  metadata_json VARCHAR
+              )""")
+              conn.execute("INSERT INTO teams VALUES ('team-h','Leeds United'),('team-a','Arsenal')")
+              conn.execute("INSERT INTO players VALUES ('player-h','Leeds Player'),('player-a','Arsenal Player')")
+              conn.execute("INSERT INTO matches VALUES ('m1',DATE '2026-01-01','team-h','team-a')")
+              conn.execute("INSERT INTO player_match_stats VALUES ('m1','player-h','team-h',90),('m1','player-a','team-a',90)")
+              events = [
+                  ('e1','team-h','player-h','FirstHalf',10,600,55,45,{'eventId':'e1','type':{'displayName':'BallTouch'},'isTouch':True}),
+                  ('e2','team-a','player-a','SecondHalf',55,3300,35,60,{'eventId':'e2','type':{'displayName':'BallTouch'},'isTouch':True}),
+              ]
+              for event_id, team_id, player_id, period, minute, clock, x, y, meta in events:
+                  meta.update({'period':{'displayName':period},'teamId':team_id,'playerId':player_id,'minute':minute,'x':x,'y':y})
+                  conn.execute(
+                      "INSERT INTO match_events VALUES (?,?,?,?, 'whoscored','raw_whoscored',?,?,?,0,?,?,?,NULL,NULL,NULL,?)",
+                      [event_id,'m1',team_id,player_id,period,minute,minute,clock,x,y,json.dumps(meta)],
+                  )
+              conn.close()
+
+              payload = build_match_spatial_payload('m1', db_path=db)
+              assert payload['match']['home_team'] == 'Leeds United'
+              assert len(payload['touches']) == 2
+              assert {row['player_id'] for row in payload['average_positions']} == {'player-h','player-a'}
+              assert payload['passes'] == []
+              assert payload['carry_readiness']['sofascore_complete'] is False
+              print('raw WhoScored spatial player payload OK')
+          PY
