@@ -11,6 +11,7 @@ import duckdb
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
+from .canonical_metric_store import init_canonical_metric_store
 from .database import DEFAULT_DB_PATH
 
 
@@ -41,21 +42,35 @@ class R2Config:
 
 
 def validate_duckdb(path: str | Path) -> dict[str, int]:
+    """Validate the immutable/base data tables shipped in the R2 snapshot.
+
+    Canonical runtime-owned tables are bootstrapped locally after download so an
+    older valid snapshot can be promoted without mutating the source R2 object.
+    """
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
         raise ValueError(f"DuckDB file is missing or empty: {path}")
     conn = duckdb.connect(str(path), read_only=True)
     try:
         existing = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
-        required = {"seasons", "matches", "player_match_stats", "team_match_stats", "canonical_metric_values"}
+        required = {"seasons", "matches", "player_match_stats", "team_match_stats"}
         missing = sorted(required - existing)
         if missing:
-            raise ValueError("DuckDB missing required tables: " + ", ".join(missing))
+            raise ValueError("DuckDB missing required base tables: " + ", ".join(missing))
         return {
             "matches": int(conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]),
             "player_match_rows": int(conn.execute("SELECT COUNT(*) FROM player_match_stats").fetchone()[0]),
             "team_match_rows": int(conn.execute("SELECT COUNT(*) FROM team_match_stats").fetchone()[0]),
         }
+    finally:
+        conn.close()
+
+
+def bootstrap_runtime_schema(path: str | Path) -> None:
+    """Create additive canonical runtime tables in the downloaded local copy."""
+    conn = duckdb.connect(str(path))
+    try:
+        init_canonical_metric_store(conn)
     finally:
         conn.close()
 
@@ -95,6 +110,7 @@ class R2DuckDBStore:
         try:
             self.client.download_file(self.config.bucket, self.config.current_key, str(tmp_path))
             validate_duckdb(tmp_path)
+            bootstrap_runtime_schema(tmp_path)
             os.replace(tmp_path, destination)
             return True
         finally:
