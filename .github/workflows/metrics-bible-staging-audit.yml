@@ -1,0 +1,79 @@
+name: Metrics Bible Staging Compatibility Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      r2_key:
+        description: R2 DuckDB object to audit
+        required: true
+        default: football/staging/2025-26.duckdb
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metrics-bible-staging-compatibility
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only Metrics Bible compatibility audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate required R2 secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Audit staging evidence against Aug-18 Metrics Bible registry
+        run: |
+          python -m v2.audit_staging_metric_compatibility \
+            --key '${{ inputs.r2_key }}' \
+            --db /tmp/metrics-bible-staging-audit.duckdb \
+            --report /tmp/metrics-bible-staging-audit.json
+
+      - name: Print metrics requiring raw data or review
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/metrics-bible-staging-audit.json'))
+          print('classification_counts=', p['classification_counts'])
+          for row in p['metrics']:
+              if row['classification'] in ('RAW_REQUIRED_OR_REVIEW','UNAVAILABLE_BY_REGISTRY'):
+                  print(row['classification'], '|', row['label'], '| bible=', row['bible_name'])
+          PY
+
+      - name: Upload compatibility report
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-bible-staging-compatibility
+          path: /tmp/metrics-bible-staging-audit.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Confirm audit is read-only
+        run: echo 'Audit complete. No R2 upload, copy, promotion, or database mutation step exists in this workflow.'
