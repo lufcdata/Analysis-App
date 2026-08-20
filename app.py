@@ -76,6 +76,37 @@ def _ensure_match_metrics(match_id: str) -> None:
     ensure_match_materialized(match_id, db_path=V2_DB_PATH)
 
 
+def _leaderboard_readiness(*, date_from=None, date_to=None, team_ids=()) -> dict[str, object]:
+    """Return the exact canonical coverage contract for a leaderboard request."""
+    return canonical_readiness(
+        V2_DB_PATH,
+        date_from=date_from,
+        date_to=date_to,
+        team_ids=team_ids,
+    )
+
+
+def _canonical_not_ready(readiness: dict[str, object]):
+    missing = list(readiness.get("missing_canonical_matches") or [])
+    missing_raw = list(readiness.get("missing_raw_matches") or [])
+    return jsonify({
+        "error": "Canonical Metrics Bible coverage is incomplete for the requested leaderboard range",
+        "error_type": "canonical_not_ready",
+        "metric_set_version": METRIC_SET_VERSION,
+        "coverage": {
+            "requested_matches": readiness.get("requested_matches", 0),
+            "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+            "coverage_percent": readiness.get("coverage_percent", 0.0),
+            "raw_schema_ready": readiness.get("raw_schema_ready", False),
+            "missing_raw_columns": readiness.get("missing_raw_columns", []),
+            "missing_raw_matches_count": len(missing_raw),
+            "missing_raw_matches_preview": missing_raw[:10],
+            "missing_canonical_matches_count": len(missing),
+            "missing_canonical_matches_preview": missing[:10],
+        },
+    }), 503
+
+
 def _runtime_diagnostics() -> dict[str, object]:
     diagnostics: dict[str, object] = {
         "raw_whoscored_rows": 0,
@@ -90,9 +121,12 @@ def _runtime_diagnostics() -> dict[str, object]:
     try:
         readiness = canonical_readiness(V2_DB_PATH)
         missing_matches = list(readiness.pop("missing_canonical_matches", []))
+        missing_raw_matches = list(readiness.pop("missing_raw_matches", []))
         diagnostics.update(readiness)
         diagnostics["missing_canonical_matches_count"] = len(missing_matches)
         diagnostics["missing_canonical_matches_preview"] = missing_matches[:10]
+        diagnostics["missing_raw_matches_count"] = len(missing_raw_matches)
+        diagnostics["missing_raw_matches_preview"] = missing_raw_matches[:10]
 
         with connection(V2_DB_PATH, read_only=True) as conn:
             tables = {str(row[0]) for row in conn.execute("SHOW TABLES").fetchall()}
@@ -260,7 +294,15 @@ def leaderboard_meta():
     try:
         surface = (request.args.get("surface") or "live").lower()
         with connection(V2_DB_PATH, read_only=True) as conn:
-            return jsonify(leaderboard_metadata(conn, surface=surface))
+            payload = leaderboard_metadata(conn, surface=surface)
+        readiness = _leaderboard_readiness()
+        payload["canonical_readiness"] = {
+            "ready": readiness.get("ready", False),
+            "requested_matches": readiness.get("requested_matches", 0),
+            "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+            "coverage_percent": readiness.get("coverage_percent", 0.0),
+        }
+        return jsonify(payload)
     except ValueError as exc:
         return jsonify({"error": str(exc), "metric_set_version": METRIC_SET_VERSION}), 400
     except Exception as exc:
@@ -290,6 +332,14 @@ def leaderboard():
             "positions": _csv("positions"),
             "limit": _optional_int("limit"),
         }
+        readiness = _leaderboard_readiness(
+            date_from=kwargs["date_from"],
+            date_to=kwargs["date_to"],
+            team_ids=kwargs["team_ids"],
+        )
+        if not readiness.get("ready", False):
+            return _canonical_not_ready(readiness)
+
         with connection(V2_DB_PATH, read_only=True) as conn:
             rows = leaderboard_rows(conn, metric, **kwargs)
         return jsonify({
@@ -300,6 +350,11 @@ def leaderboard():
             "metric": metric,
             "date_from": kwargs["date_from"],
             "date_to": kwargs["date_to"],
+            "canonical_coverage": {
+                "requested_matches": readiness.get("requested_matches", 0),
+                "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+                "coverage_percent": readiness.get("coverage_percent", 0.0),
+            },
             "rows": rows,
         })
     except ValueError as exc:
