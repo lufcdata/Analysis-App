@@ -1,0 +1,72 @@
+name: Inspect R2 Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      r2_key:
+        description: R2 DuckDB object to inspect
+        required: true
+        default: football/staging/2025-26.duckdb
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inspect-r2-snapshot
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Read-only R2 DuckDB inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+    steps:
+      - name: Check out production branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate required R2 secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured as a GitHub Actions secret"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
+      - name: Inspect snapshot read-only
+        run: |
+          python -m v2.inspect_r2_snapshot \
+            --key '${{ inputs.r2_key }}' \
+            --db /tmp/r2-inspect.duckdb \
+            --report /tmp/r2-snapshot-inventory.json
+
+      - name: Upload inventory report
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-snapshot-inventory
+          path: /tmp/r2-snapshot-inventory.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Confirm no publish path exists
+        run: |
+          echo 'Inspection complete. This workflow contains no R2 upload or promotion step.'
