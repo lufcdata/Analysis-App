@@ -9,6 +9,7 @@ from flask_cors import CORS
 from v2.canonical_leaderboard_query import leaderboard_metadata, leaderboard_rows
 from v2.canonical_materialize import ensure_match_materialized
 from v2.canonical_match_stats import get_canonical_match_stats
+from v2.canonical_readiness import canonical_readiness
 from v2.database import DEFAULT_DB_PATH, connection
 from v2.live_pitch_metric_layers import get_live_pitch_metric_layer
 from v2.match_inventory import get_match_inventory
@@ -83,14 +84,24 @@ def _runtime_diagnostics() -> dict[str, object]:
         "materialized_matches": 0,
     }
     if not V2_DB_PATH.exists():
+        diagnostics.update(canonical_readiness(V2_DB_PATH))
         return diagnostics
+
     try:
+        readiness = canonical_readiness(V2_DB_PATH)
+        missing_matches = list(readiness.pop("missing_canonical_matches", []))
+        diagnostics.update(readiness)
+        diagnostics["missing_canonical_matches_count"] = len(missing_matches)
+        diagnostics["missing_canonical_matches_preview"] = missing_matches[:10]
+
         with connection(V2_DB_PATH, read_only=True) as conn:
             tables = {str(row[0]) for row in conn.execute("SHOW TABLES").fetchall()}
             if "match_events" in tables:
-                diagnostics["raw_whoscored_rows"] = int(conn.execute(
-                    "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
-                ).fetchone()[0])
+                event_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('match_events')").fetchall()}
+                if {"source", "event_type"}.issubset(event_columns):
+                    diagnostics["raw_whoscored_rows"] = int(conn.execute(
+                        "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
+                    ).fetchone()[0])
             if "canonical_metric_values" in tables:
                 diagnostics["canonical_metric_rows"] = int(conn.execute(
                     "SELECT COUNT(*) FROM canonical_metric_values WHERE metric_set_version=?",
