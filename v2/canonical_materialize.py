@@ -33,43 +33,91 @@ def _metadata(value: Any) -> dict[str, Any]:
         return {}
 
 
+def _display_name(value: Any) -> Any:
+    return value.get("displayName") if isinstance(value, dict) else value
+
+
+def _normalise_period(value: Any) -> str | None:
+    raw = _display_name(value)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    compact = "".join(ch for ch in text.lower() if ch.isalnum())
+    if compact in {"firsthalf", "1h", "first", "period1", "1"}:
+        return "FirstHalf"
+    if compact in {"secondhalf", "2h", "second", "period2", "2"}:
+        return "SecondHalf"
+    return text
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info('{table}')").fetchall()}
+
+
 def _raw_events(conn, match_id: str) -> list[dict[str, Any]]:
+    """Load the full-fidelity WhoScored source rows for one match.
+
+    Do not pre-filter on normalised derivative columns such as ``period``. Older
+    valid snapshots can encode those labels differently; the original metadata
+    JSON is the football source of truth and is normalised only after loading.
+    """
+    columns = _table_columns(conn, "match_events")
+    required = {"match_id", "source", "event_type", "metadata_json", "event_id"}
+    missing = sorted(required - columns)
+    if missing:
+        raise ValueError("match_events missing required raw-event columns: " + ", ".join(missing))
+
+    def col(name: str, fallback: str = "NULL") -> str:
+        return name if name in columns else fallback
+
     rows = conn.execute(
-        """
-        SELECT team_id,player_id,period,minute,expanded_minute,second,time_seconds,
-               x,y,end_x,end_y,outcome,metadata_json,event_id
+        f"""
+        SELECT {col('team_id')},{col('player_id')},{col('period')},{col('minute')},
+               {col('expanded_minute')},{col('second')},{col('time_seconds')},
+               {col('x')},{col('y')},{col('end_x')},{col('end_y')},{col('outcome')},
+               metadata_json,event_id
         FROM match_events
         WHERE match_id=? AND lower(source)='whoscored'
           AND event_type='raw_whoscored'
-          AND period IN ('FirstHalf','SecondHalf')
-        ORDER BY time_seconds,event_id
+        ORDER BY COALESCE({col('time_seconds', '0')},0),event_id
         """,
         [match_id],
     ).fetchall()
+
     events: list[dict[str, Any]] = []
     for (
         team_id, player_id, period, minute, expanded_minute, second, time_seconds,
         x, y, end_x, end_y, outcome, metadata_json, event_id,
     ) in rows:
         event = _metadata(metadata_json)
+        metadata_period = _normalise_period(event.get("period"))
+        column_period = _normalise_period(period)
+        canonical_period = metadata_period or column_period
+
         event.update({
             "teamId": None if team_id is None else str(team_id),
             "playerId": None if player_id is None else str(player_id),
-            "period": {"displayName": period},
-            "minute": minute,
-            "expandedMinute": expanded_minute if expanded_minute is not None else minute,
-            "second": second,
+            "minute": minute if minute is not None else event.get("minute"),
+            "expandedMinute": (
+                expanded_minute
+                if expanded_minute is not None
+                else event.get("expandedMinute", event.get("minute", minute))
+            ),
+            "second": second if second is not None else event.get("second"),
             "time_seconds": time_seconds,
-            "x": x,
-            "y": y,
-            "endX": end_x,
-            "endY": end_y,
+            "x": x if x is not None else event.get("x"),
+            "y": y if y is not None else event.get("y"),
+            "endX": end_x if end_x is not None else event.get("endX"),
+            "endY": end_y if end_y is not None else event.get("endY"),
         })
+        if canonical_period is not None:
+            event["period"] = {"displayName": canonical_period}
         if event.get("eventId") is None and event.get("id") is None:
             event["eventId"] = event_id
         if "outcomeType" not in event and outcome is not None:
             event["outcomeType"] = {"displayName": "Successful" if bool(outcome) else "Unsuccessful"}
         events.append(event)
+
     if not events:
         raise ValueError(
             f"No full-fidelity raw WhoScored events found for {match_id}; "
@@ -89,9 +137,25 @@ def _match_teams(conn, match_id: str) -> tuple[str, str]:
 
 
 def _players(conn, match_id: str) -> list[dict[str, Any]]:
+    """Read the canonical roster while tolerating historical minutes column names."""
+    pms_columns = _table_columns(conn, "player_match_stats")
+    if not {"match_id", "player_id", "team_id"}.issubset(pms_columns):
+        raise ValueError("player_match_stats is missing match/player/team identity columns")
+
+    if "mins_played" in pms_columns:
+        minutes_expr = "pms.mins_played"
+    elif "minutes_played" in pms_columns:
+        minutes_expr = "pms.minutes_played"
+    elif "minutes" in pms_columns:
+        minutes_expr = "pms.minutes"
+    else:
+        minutes_expr = "0"
+
+    player_columns = _table_columns(conn, "players")
+    position_expr = "p.position" if "position" in player_columns else "NULL"
     rows = conn.execute(
-        """
-        SELECT pms.player_id,pms.team_id,pms.mins_played,p.position
+        f"""
+        SELECT pms.player_id,pms.team_id,{minutes_expr},{position_expr}
         FROM player_match_stats pms
         LEFT JOIN players p ON p.player_id=pms.player_id
         WHERE pms.match_id=?
@@ -112,8 +176,7 @@ def _players(conn, match_id: str) -> list[dict[str, Any]]:
 
 def _is_substitute(events: list[dict[str, Any]], player_id: str) -> bool:
     for event in events:
-        etype = event.get("type")
-        etype = etype.get("displayName") if isinstance(etype, dict) else etype
+        etype = _display_name(event.get("type"))
         if event.get("playerId") == player_id and etype == "SubstitutionOn":
             return True
     return False
@@ -153,9 +216,6 @@ def materialize_match(db_path: str | Path, match_id: str, *, force: bool = False
         if not players:
             raise ValueError(f"No player_match_stats roster found for {match_id}")
 
-        # match_events/player_match_stats already carry canonical V2 IDs. The Bible
-        # receiver engine still requires an explicit identity map, so identity is
-        # deliberately one-to-one here rather than inferred from names.
         identities = {row["player_id"] for row in players}
         identities.update(str(event["playerId"]) for event in events if event.get("playerId"))
         player_id_map = {player_id: player_id for player_id in identities}
@@ -220,8 +280,6 @@ def materialize_match(db_path: str | Path, match_id: str, *, force: bool = False
                 surface="live",
             )
             metrics = dict(result["metrics"])
-            # Possession is a team/match statistic; do not publish a fabricated
-            # player possession share on the live player surface.
             metrics.pop("possession", None)
             replace_metric_values(
                 conn,

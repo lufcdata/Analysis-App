@@ -71,12 +71,51 @@ def _require_db():
 
 
 def _ensure_match_metrics(match_id: str) -> None:
-    """Populate the canonical store for the requested match only.
-
-    This keeps Render startup lightweight while preserving the hard rule that
-    displayed statistics come from the versioned Metrics Bible store.
-    """
+    """Populate the canonical Metrics Bible store for the requested match."""
     ensure_match_materialized(match_id, db_path=V2_DB_PATH)
+
+
+def _runtime_diagnostics() -> dict[str, object]:
+    diagnostics: dict[str, object] = {
+        "raw_whoscored_rows": 0,
+        "canonical_metric_rows": 0,
+        "canonical_exposure_rows": 0,
+        "materialized_matches": 0,
+    }
+    if not V2_DB_PATH.exists():
+        return diagnostics
+    try:
+        with connection(V2_DB_PATH, read_only=True) as conn:
+            tables = {str(row[0]) for row in conn.execute("SHOW TABLES").fetchall()}
+            if "match_events" in tables:
+                diagnostics["raw_whoscored_rows"] = int(conn.execute(
+                    "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
+                ).fetchone()[0])
+            if "canonical_metric_values" in tables:
+                diagnostics["canonical_metric_rows"] = int(conn.execute(
+                    "SELECT COUNT(*) FROM canonical_metric_values WHERE metric_set_version=?",
+                    [METRIC_SET_VERSION],
+                ).fetchone()[0])
+                diagnostics["materialized_matches"] = int(conn.execute(
+                    "SELECT COUNT(DISTINCT match_id) FROM canonical_metric_values WHERE metric_set_version=?",
+                    [METRIC_SET_VERSION],
+                ).fetchone()[0])
+            if "canonical_player_exposure" in tables:
+                diagnostics["canonical_exposure_rows"] = int(conn.execute(
+                    "SELECT COUNT(*) FROM canonical_player_exposure WHERE metric_set_version=?",
+                    [METRIC_SET_VERSION],
+                ).fetchone()[0])
+    except Exception as exc:
+        diagnostics["diagnostics_error"] = f"{type(exc).__name__}: {exc}"
+    return diagnostics
+
+
+def _server_error(exc: Exception):
+    return jsonify({
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "metric_set_version": METRIC_SET_VERSION,
+    }), 500
 
 
 @app.get("/")
@@ -92,6 +131,7 @@ def health():
         "metric_set_version": METRIC_SET_VERSION,
         "db_path": str(V2_DB_PATH),
         "db_available": V2_DB_PATH.exists(),
+        **_runtime_diagnostics(),
     })
 
 
@@ -113,6 +153,8 @@ def matches():
         ))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/matches/<match_id>/spatial")
@@ -133,6 +175,8 @@ def match_spatial(match_id: str):
     except ValueError as exc:
         message = str(exc)
         return jsonify({"error": message}), 404 if message.startswith("Unknown V2 match_id") else 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/matches/<match_id>/stats")
@@ -150,6 +194,8 @@ def match_stats(match_id: str):
     except ValueError as exc:
         message = str(exc)
         return jsonify({"error": message}), 404 if message.startswith("Unknown V2 match_id") else 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/matches/<match_id>/metric-leaders")
@@ -169,6 +215,8 @@ def match_metric_leaders(match_id: str):
     except ValueError as exc:
         message = str(exc)
         return jsonify({"error": message}), 404 if message.startswith("Unknown V2 match_id") else 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/matches/<match_id>/pitch-metric")
@@ -189,6 +237,8 @@ def match_pitch_metric(match_id: str):
     except ValueError as exc:
         message = str(exc)
         return jsonify({"error": message}), 404 if message.startswith("Unknown V2 match_id") else 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/leaderboard/meta")
@@ -202,6 +252,8 @@ def leaderboard_meta():
             return jsonify(leaderboard_metadata(conn, surface=surface))
     except ValueError as exc:
         return jsonify({"error": str(exc), "metric_set_version": METRIC_SET_VERSION}), 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 @app.get("/api/v2/leaderboard")
@@ -241,6 +293,8 @@ def leaderboard():
         })
     except ValueError as exc:
         return jsonify({"error": str(exc), "metric_set_version": METRIC_SET_VERSION}), 400
+    except Exception as exc:
+        return _server_error(exc)
 
 
 if __name__ == "__main__":
