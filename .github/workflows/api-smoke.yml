@@ -192,7 +192,7 @@ jobs:
               for event_id, team_id, player_id, period, minute, clock, x, y, meta in events:
                   meta.update({'period':{'displayName':period},'teamId':team_id,'playerId':player_id,'minute':minute,'x':x,'y':y})
                   conn.execute(
-                      "INSERT INTO match_events VALUES (?,?,?,?, 'whoscored','raw_whoscored',?,?,?,0,?,?,?,NULL,NULL,NULL,NULL,?)",
+                      "INSERT INTO match_events VALUES (?,?,?,?, 'whoscored','raw_whoscored',?,?,?,0,?,?,?,NULL,NULL,NULL,?)",
                       [event_id,'m1',team_id,player_id,period,minute,minute,clock,x,y,json.dumps(meta)],
                   )
               conn.close()
