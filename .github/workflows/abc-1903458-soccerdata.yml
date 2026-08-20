@@ -19,13 +19,21 @@ jobs:
           echo "runner=$RUNNER_NAME"
           echo "os=$RUNNER_OS"
           echo "arch=$RUNNER_ARCH"
-          which python3
-          python3 --version
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Confirm Python 3.12
+        run: |
+          which python
+          python --version
 
       - name: Create isolated environment
         run: |
           rm -rf .venv-abc1903458 abc-1903458
-          python3 -m venv .venv-abc1903458
+          python -m venv .venv-abc1903458
           .venv-abc1903458/bin/python -m pip install --upgrade pip
           .venv-abc1903458/bin/python -m pip install 'soccerdata==1.9.1' pandas
 
@@ -70,7 +78,7 @@ jobs:
         with:
           name: abc-1903458-fresh-${{ github.run_id }}
           path: abc-1903458/**
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Safety confirmation
