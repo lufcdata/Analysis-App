@@ -11,6 +11,7 @@ import duckdb
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
+from .canonical_materialize_all import materialize_all
 from .canonical_metric_store import init_canonical_metric_store
 from .database import DEFAULT_DB_PATH
 
@@ -42,37 +43,59 @@ class R2Config:
 
 
 def validate_duckdb(path: str | Path) -> dict[str, int]:
-    """Validate the immutable/base data tables shipped in the R2 snapshot.
-
-    Canonical runtime-owned tables are bootstrapped locally after download so an
-    older valid snapshot can be promoted without mutating the source R2 object.
-    """
+    """Validate the immutable/base data required by the canonical production API."""
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
         raise ValueError(f"DuckDB file is missing or empty: {path}")
     conn = duckdb.connect(str(path), read_only=True)
     try:
         existing = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
-        required = {"seasons", "matches", "player_match_stats", "team_match_stats"}
+        required = {
+            "seasons",
+            "matches",
+            "teams",
+            "players",
+            "match_events",
+            "player_match_stats",
+            "team_match_stats",
+        }
         missing = sorted(required - existing)
         if missing:
             raise ValueError("DuckDB missing required base tables: " + ", ".join(missing))
+        raw_event_count = int(conn.execute(
+            "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
+        ).fetchone()[0])
+        if raw_event_count <= 0:
+            raise ValueError(
+                "DuckDB contains no full-fidelity raw WhoScored events; refusing to start the Metrics Bible API"
+            )
         return {
             "matches": int(conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]),
             "player_match_rows": int(conn.execute("SELECT COUNT(*) FROM player_match_stats").fetchone()[0]),
             "team_match_rows": int(conn.execute("SELECT COUNT(*) FROM team_match_stats").fetchone()[0]),
+            "raw_whoscored_events": raw_event_count,
         }
     finally:
         conn.close()
 
 
-def bootstrap_runtime_schema(path: str | Path) -> None:
-    """Create additive canonical runtime tables in the downloaded local copy."""
+def bootstrap_runtime_schema(path: str | Path) -> dict[str, object]:
+    """Create and populate the canonical runtime stores in the downloaded copy.
+
+    The R2 source object remains immutable. The Render-local copy is materialised
+    from full-fidelity raw WhoScored events through the locked Aug-18 Metrics Bible
+    before the API process is allowed to start.
+    """
     conn = duckdb.connect(str(path))
     try:
         init_canonical_metric_store(conn)
     finally:
         conn.close()
+
+    summary = materialize_all(path)
+    if int(summary.get("matches_discovered", 0)) <= 0:
+        raise ValueError("No raw WhoScored matches discovered for canonical materialisation")
+    return summary
 
 
 class R2DuckDBStore:

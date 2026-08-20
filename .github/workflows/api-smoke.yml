@@ -77,3 +77,83 @@ jobs:
               assert match['sofascore_ingested'] is False
               print("older snapshot inventory compatibility OK")
           PY
+      - name: Verify Metrics Bible production materialization
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          import duckdb
+
+          from v2.canonical_materialize import materialize_match
+          from v2.metric_registry import METRIC_SET_VERSION
+
+          with tempfile.TemporaryDirectory() as tmp:
+              db = Path(tmp) / "materialize.duckdb"
+              conn = duckdb.connect(str(db))
+              conn.execute("CREATE TABLE matches (match_id VARCHAR, home_team_id VARCHAR, away_team_id VARCHAR)")
+              conn.execute("CREATE TABLE players (player_id VARCHAR, position VARCHAR)")
+              conn.execute("CREATE TABLE player_match_stats (match_id VARCHAR, player_id VARCHAR, team_id VARCHAR, mins_played DOUBLE)")
+              conn.execute("""CREATE TABLE match_events (
+                  event_id VARCHAR, match_id VARCHAR, team_id VARCHAR, player_id VARCHAR,
+                  source VARCHAR, event_type VARCHAR, period VARCHAR, minute INTEGER,
+                  expanded_minute INTEGER, second INTEGER, time_seconds INTEGER,
+                  x DOUBLE, y DOUBLE, end_x DOUBLE, end_y DOUBLE, outcome BOOLEAN,
+                  metadata_json VARCHAR
+              )""")
+              conn.execute("INSERT INTO matches VALUES ('m1','team-h','team-a')")
+              conn.execute("INSERT INTO players VALUES ('player-h','CM'),('player-a','CM')")
+              conn.execute("INSERT INTO player_match_stats VALUES ('m1','player-h','team-h',90),('m1','player-a','team-a',90)")
+
+              rows = [
+                  ('e1','m1','team-h','player-h','FirstHalf',10,10,0,600,50,50,80,50,True,{
+                      'eventId':'e1','type':{'displayName':'Pass'},'period':{'displayName':'FirstHalf'},
+                      'outcomeType':{'displayName':'Successful'},'teamId':'team-h','playerId':'player-h',
+                      'x':50,'y':50,'isTouch':True,
+                      'qualifiers':[{'type':{'displayName':'PassEndX'},'value':'80'},{'type':{'displayName':'PassEndY'},'value':'50'}],
+                  }),
+                  ('e2','m1','team-a','player-a','FirstHalf',11,11,0,660,40,40,60,40,True,{
+                      'eventId':'e2','type':{'displayName':'Pass'},'period':{'displayName':'FirstHalf'},
+                      'outcomeType':{'displayName':'Successful'},'teamId':'team-a','playerId':'player-a',
+                      'x':40,'y':40,'isTouch':True,
+                      'qualifiers':[{'type':{'displayName':'PassEndX'},'value':'60'},{'type':{'displayName':'PassEndY'},'value':'40'}],
+                  }),
+                  ('e3','m1',None,None,'SecondHalf',90,90,0,5400,None,None,None,None,None,{
+                      'eventId':'e3','type':{'displayName':'End'},'period':{'displayName':'SecondHalf'},
+                      'minute':90,'expandedMinute':90,'second':0,
+                  }),
+              ]
+              for event_id, match_id, team_id, player_id, period, minute, expanded, second, clock, x, y, end_x, end_y, outcome, meta in rows:
+                  conn.execute(
+                      "INSERT INTO match_events VALUES (?,?,?,?, 'whoscored','raw_whoscored',?,?,?,?,?,?,?,?,?,?,?)",
+                      [event_id, match_id, team_id, player_id, period, minute, expanded, second, clock, x, y, end_x, end_y, outcome, json.dumps(meta)],
+                  )
+              conn.close()
+
+              report = materialize_match(db, 'm1')
+              assert report['status'] == 'materialised'
+              conn = duckdb.connect(str(db), read_only=True)
+              team_rows = conn.execute(
+                  "SELECT COUNT(*) FROM canonical_metric_values WHERE metric_set_version=? AND match_id='m1' AND scope='team'",
+                  [METRIC_SET_VERSION],
+              ).fetchone()[0]
+              player_rows = conn.execute(
+                  "SELECT COUNT(*) FROM canonical_metric_values WHERE metric_set_version=? AND match_id='m1' AND scope='player'",
+                  [METRIC_SET_VERSION],
+              ).fetchone()[0]
+              exposure_rows = conn.execute(
+                  "SELECT COUNT(*) FROM canonical_player_exposure WHERE metric_set_version=? AND match_id='m1'",
+                  [METRIC_SET_VERSION],
+              ).fetchone()[0]
+              progressive = conn.execute(
+                  "SELECT metric_value FROM canonical_metric_values WHERE metric_set_version=? AND match_id='m1' AND scope='player' AND player_id='player-h' AND metric_key='progressive_passes'",
+                  [METRIC_SET_VERSION],
+              ).fetchone()
+              conn.close()
+
+              assert team_rows > 0
+              assert player_rows > 0
+              assert exposure_rows == 2
+              assert progressive is not None and float(progressive[0]) == 1.0
+              print('Metrics Bible production materialization OK')
+          PY
