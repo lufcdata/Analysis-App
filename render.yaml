@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: lufcdata-analysis
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      python -c "from v2.r2_storage import R2DuckDBStore;
+      ok=R2DuckDBStore().download_current('data/football.duckdb', required=True);
+      print({'downloaded': ok, 'db': 'data/football.duckdb'})"
+      && gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --threads 4
+    healthCheckPath: /api/v2/health
+    envVars:
+      - key: V2_DB_PATH
+        value: data/football.duckdb
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_CURRENT_KEY
+        sync: false
