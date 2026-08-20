@@ -1,0 +1,91 @@
+name: Canonical readiness smoke
+
+on:
+  pull_request:
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Verify date and team scoped readiness
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          import duckdb
+
+          from v2.canonical_materialize import materialize_match
+          from v2.canonical_readiness import canonical_readiness, assert_canonical_ready
+
+          with tempfile.TemporaryDirectory() as tmp:
+              db = Path(tmp) / 'readiness.duckdb'
+              conn = duckdb.connect(str(db))
+              conn.execute('CREATE TABLE matches (match_id VARCHAR, match_date DATE, home_team_id VARCHAR, away_team_id VARCHAR)')
+              conn.execute('CREATE TABLE players (player_id VARCHAR, position VARCHAR)')
+              conn.execute('CREATE TABLE player_match_stats (match_id VARCHAR, player_id VARCHAR, team_id VARCHAR, mins_played DOUBLE)')
+              conn.execute('''CREATE TABLE match_events (
+                  event_id VARCHAR, match_id VARCHAR, team_id VARCHAR, player_id VARCHAR,
+                  source VARCHAR, event_type VARCHAR, period VARCHAR, minute INTEGER,
+                  expanded_minute INTEGER, second INTEGER, time_seconds INTEGER,
+                  x DOUBLE, y DOUBLE, end_x DOUBLE, end_y DOUBLE, outcome BOOLEAN,
+                  metadata_json VARCHAR
+              )''')
+              conn.execute("INSERT INTO matches VALUES ('m1',DATE '2026-01-01','h','a'),('m2',DATE '2026-02-01','h','b')")
+              conn.execute("INSERT INTO players VALUES ('ph','CM'),('pa','CM'),('pb','CM')")
+              conn.execute("INSERT INTO player_match_stats VALUES ('m1','ph','h',90),('m1','pa','a',90),('m2','ph','h',90),('m2','pb','b',90)")
+
+              def add_event(event_id, match_id, team_id, player_id, minute):
+                  meta = {
+                      'eventId': event_id,
+                      'type': {'displayName': 'Pass'},
+                      'period': {'displayName': 'FirstHalf'},
+                      'outcomeType': {'displayName': 'Successful'},
+                      'teamId': team_id,
+                      'playerId': player_id,
+                      'minute': minute,
+                      'x': 50,
+                      'y': 50,
+                      'qualifiers': [
+                          {'type': {'displayName': 'PassEndX'}, 'value': '80'},
+                          {'type': {'displayName': 'PassEndY'}, 'value': '50'},
+                      ],
+                  }
+                  conn.execute(
+                      "INSERT INTO match_events VALUES (?,?,?,?, 'whoscored','raw_whoscored','FirstHalf',?,?,0,?,50,50,80,50,TRUE,?)",
+                      [event_id, match_id, team_id, player_id, minute, minute, minute * 60, json.dumps(meta)],
+                  )
+
+              add_event('e1','m1','h','ph',10)
+              add_event('e2','m1','a','pa',11)
+              add_event('e3','m2','h','ph',12)
+              add_event('e4','m2','b','pb',13)
+              conn.close()
+
+              materialize_match(db, 'm1')
+
+              january = canonical_readiness(db, date_from='2026-01-01', date_to='2026-01-31')
+              assert january['requested_matches'] == 1
+              assert january['canonical_complete_matches'] == 1
+              assert january['coverage_percent'] == 100.0
+              assert january['ready'] is True
+              assert_canonical_ready(db, date_from='2026-01-01', date_to='2026-01-31')
+
+              full = canonical_readiness(db, date_from='2026-01-01', date_to='2026-02-28')
+              assert full['requested_matches'] == 2
+              assert full['canonical_complete_matches'] == 1
+              assert full['coverage_percent'] == 50.0
+              assert full['ready'] is False
+              assert full['missing_canonical_matches'] == ['m2']
+
+              home_team = canonical_readiness(db, date_from='2026-02-01', date_to='2026-02-28', team_ids=['h'])
+              assert home_team['requested_matches'] == 1
+              assert home_team['missing_canonical_matches'] == ['m2']
+
+              print('scoped canonical readiness contract OK')
+          PY

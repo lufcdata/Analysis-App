@@ -9,6 +9,7 @@ from flask_cors import CORS
 from v2.canonical_leaderboard_query import leaderboard_metadata, leaderboard_rows
 from v2.canonical_materialize import ensure_match_materialized
 from v2.canonical_match_stats import get_canonical_match_stats
+from v2.canonical_readiness import canonical_readiness
 from v2.database import DEFAULT_DB_PATH, connection
 from v2.live_pitch_metric_layers import get_live_pitch_metric_layer
 from v2.match_inventory import get_match_inventory
@@ -75,6 +76,37 @@ def _ensure_match_metrics(match_id: str) -> None:
     ensure_match_materialized(match_id, db_path=V2_DB_PATH)
 
 
+def _leaderboard_readiness(*, date_from=None, date_to=None, team_ids=()) -> dict[str, object]:
+    """Return the exact canonical coverage contract for a leaderboard request."""
+    return canonical_readiness(
+        V2_DB_PATH,
+        date_from=date_from,
+        date_to=date_to,
+        team_ids=team_ids,
+    )
+
+
+def _canonical_not_ready(readiness: dict[str, object]):
+    missing = list(readiness.get("missing_canonical_matches") or [])
+    missing_raw = list(readiness.get("missing_raw_matches") or [])
+    return jsonify({
+        "error": "Canonical Metrics Bible coverage is incomplete for the requested leaderboard range",
+        "error_type": "canonical_not_ready",
+        "metric_set_version": METRIC_SET_VERSION,
+        "coverage": {
+            "requested_matches": readiness.get("requested_matches", 0),
+            "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+            "coverage_percent": readiness.get("coverage_percent", 0.0),
+            "raw_schema_ready": readiness.get("raw_schema_ready", False),
+            "missing_raw_columns": readiness.get("missing_raw_columns", []),
+            "missing_raw_matches_count": len(missing_raw),
+            "missing_raw_matches_preview": missing_raw[:10],
+            "missing_canonical_matches_count": len(missing),
+            "missing_canonical_matches_preview": missing[:10],
+        },
+    }), 503
+
+
 def _runtime_diagnostics() -> dict[str, object]:
     diagnostics: dict[str, object] = {
         "raw_whoscored_rows": 0,
@@ -83,14 +115,27 @@ def _runtime_diagnostics() -> dict[str, object]:
         "materialized_matches": 0,
     }
     if not V2_DB_PATH.exists():
+        diagnostics.update(canonical_readiness(V2_DB_PATH))
         return diagnostics
+
     try:
+        readiness = canonical_readiness(V2_DB_PATH)
+        missing_matches = list(readiness.pop("missing_canonical_matches", []))
+        missing_raw_matches = list(readiness.pop("missing_raw_matches", []))
+        diagnostics.update(readiness)
+        diagnostics["missing_canonical_matches_count"] = len(missing_matches)
+        diagnostics["missing_canonical_matches_preview"] = missing_matches[:10]
+        diagnostics["missing_raw_matches_count"] = len(missing_raw_matches)
+        diagnostics["missing_raw_matches_preview"] = missing_raw_matches[:10]
+
         with connection(V2_DB_PATH, read_only=True) as conn:
             tables = {str(row[0]) for row in conn.execute("SHOW TABLES").fetchall()}
             if "match_events" in tables:
-                diagnostics["raw_whoscored_rows"] = int(conn.execute(
-                    "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
-                ).fetchone()[0])
+                event_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('match_events')").fetchall()}
+                if {"source", "event_type"}.issubset(event_columns):
+                    diagnostics["raw_whoscored_rows"] = int(conn.execute(
+                        "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
+                    ).fetchone()[0])
             if "canonical_metric_values" in tables:
                 diagnostics["canonical_metric_rows"] = int(conn.execute(
                     "SELECT COUNT(*) FROM canonical_metric_values WHERE metric_set_version=?",
@@ -249,7 +294,15 @@ def leaderboard_meta():
     try:
         surface = (request.args.get("surface") or "live").lower()
         with connection(V2_DB_PATH, read_only=True) as conn:
-            return jsonify(leaderboard_metadata(conn, surface=surface))
+            payload = leaderboard_metadata(conn, surface=surface)
+        readiness = _leaderboard_readiness()
+        payload["canonical_readiness"] = {
+            "ready": readiness.get("ready", False),
+            "requested_matches": readiness.get("requested_matches", 0),
+            "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+            "coverage_percent": readiness.get("coverage_percent", 0.0),
+        }
+        return jsonify(payload)
     except ValueError as exc:
         return jsonify({"error": str(exc), "metric_set_version": METRIC_SET_VERSION}), 400
     except Exception as exc:
@@ -279,6 +332,14 @@ def leaderboard():
             "positions": _csv("positions"),
             "limit": _optional_int("limit"),
         }
+        readiness = _leaderboard_readiness(
+            date_from=kwargs["date_from"],
+            date_to=kwargs["date_to"],
+            team_ids=kwargs["team_ids"],
+        )
+        if not readiness.get("ready", False):
+            return _canonical_not_ready(readiness)
+
         with connection(V2_DB_PATH, read_only=True) as conn:
             rows = leaderboard_rows(conn, metric, **kwargs)
         return jsonify({
@@ -289,6 +350,11 @@ def leaderboard():
             "metric": metric,
             "date_from": kwargs["date_from"],
             "date_to": kwargs["date_to"],
+            "canonical_coverage": {
+                "requested_matches": readiness.get("requested_matches", 0),
+                "canonical_complete_matches": readiness.get("canonical_complete_matches", 0),
+                "coverage_percent": readiness.get("coverage_percent", 0.0),
+            },
             "rows": rows,
         })
     except ValueError as exc:
