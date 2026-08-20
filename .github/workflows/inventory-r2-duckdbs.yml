@@ -1,0 +1,73 @@
+name: Inventory R2 DuckDBs
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: 'R2 prefix to inspect'
+        required: true
+        default: 'football/'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: Read-only inventory of all R2 DuckDB snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate required R2 secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Inventory every DuckDB under selected prefix
+        run: |
+          python -m v2.inventory_r2_duckdbs \
+            --prefix '${{ inputs.prefix }}' \
+            --report /tmp/r2-duckdb-inventory.json
+
+      - name: Print compact comparison
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/r2-duckdb-inventory.json'))
+          print('duckdb_object_count=', p['duckdb_object_count'])
+          for row in p['objects']:
+              i=row.get('inspection', {})
+              print(row['key'], '| MiB=', round(row['size']/1024/1024,2), '| matches=', i.get('matches_rows'), '| ws_matches=', i.get('distinct_whoscored_matches'), '| events=', i.get('match_events_rows'), '| ws_events=', i.get('whoscored_event_rows'), '| raw_rows=', i.get('raw_whoscored_rows'), '| raw_matches=', i.get('raw_whoscored_matches'), '| error=', row.get('error'))
+          PY
+
+      - name: Upload inventory report
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-full-duckdb-inventory
+          path: /tmp/r2-duckdb-inventory.json
+          retention-days: 14
+
+      - name: Confirm read-only behavior
+        run: echo 'Read-only inventory complete. Workflow contains no R2 upload, copy, delete, promotion, or database mutation step.'
