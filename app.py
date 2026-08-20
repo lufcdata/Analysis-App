@@ -7,6 +7,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from v2.canonical_leaderboard_query import leaderboard_metadata, leaderboard_rows
+from v2.canonical_materialize import ensure_match_materialized
 from v2.canonical_match_stats import get_canonical_match_stats
 from v2.database import DEFAULT_DB_PATH, connection
 from v2.live_pitch_metric_layers import get_live_pitch_metric_layer
@@ -67,6 +68,15 @@ def _require_db():
         "configured_db_path": str(CONFIGURED_V2_DB_PATH),
         "default_db_path": str(DEFAULT_DB_PATH),
     }), 503
+
+
+def _ensure_match_metrics(match_id: str) -> None:
+    """Populate the canonical store for the requested match only.
+
+    This keeps Render startup lightweight while preserving the hard rule that
+    displayed statistics come from the versioned Metrics Bible store.
+    """
+    ensure_match_materialized(match_id, db_path=V2_DB_PATH)
 
 
 @app.get("/")
@@ -131,6 +141,7 @@ def match_stats(match_id: str):
     if unavailable:
         return unavailable
     try:
+        _ensure_match_metrics(match_id)
         return jsonify(get_canonical_match_stats(
             match_id,
             period=request.args.get("period") or "full",
@@ -147,6 +158,7 @@ def match_metric_leaders(match_id: str):
     if unavailable:
         return unavailable
     try:
+        _ensure_match_metrics(match_id)
         return jsonify(get_match_metric_leaders(
             match_id,
             metric=request.args.get("metric") or "successful_passes",

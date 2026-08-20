@@ -11,7 +11,7 @@ import duckdb
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-from .canonical_materialize_all import materialize_all
+from .canonical_exposure_store import init_canonical_exposure_store
 from .canonical_metric_store import init_canonical_metric_store
 from .database import DEFAULT_DB_PATH
 
@@ -51,13 +51,8 @@ def validate_duckdb(path: str | Path) -> dict[str, int]:
     try:
         existing = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
         required = {
-            "seasons",
-            "matches",
-            "teams",
-            "players",
-            "match_events",
-            "player_match_stats",
-            "team_match_stats",
+            "seasons", "matches", "teams", "players", "match_events",
+            "player_match_stats", "team_match_stats",
         }
         missing = sorted(required - existing)
         if missing:
@@ -66,9 +61,7 @@ def validate_duckdb(path: str | Path) -> dict[str, int]:
             "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
         ).fetchone()[0])
         if raw_event_count <= 0:
-            raise ValueError(
-                "DuckDB contains no full-fidelity raw WhoScored events; refusing to start the Metrics Bible API"
-            )
+            raise ValueError("DuckDB contains no full-fidelity raw WhoScored events")
         return {
             "matches": int(conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]),
             "player_match_rows": int(conn.execute("SELECT COUNT(*) FROM player_match_stats").fetchone()[0]),
@@ -79,23 +72,15 @@ def validate_duckdb(path: str | Path) -> dict[str, int]:
         conn.close()
 
 
-def bootstrap_runtime_schema(path: str | Path) -> dict[str, object]:
-    """Create and populate the canonical runtime stores in the downloaded copy.
-
-    The R2 source object remains immutable. The Render-local copy is materialised
-    from full-fidelity raw WhoScored events through the locked Aug-18 Metrics Bible
-    before the API process is allowed to start.
-    """
+def bootstrap_runtime_schema(path: str | Path) -> None:
+    """Create only lightweight additive stores; match metrics materialise on demand."""
     conn = duckdb.connect(str(path))
     try:
         init_canonical_metric_store(conn)
+        init_canonical_exposure_store(conn)
+        conn.commit()
     finally:
         conn.close()
-
-    summary = materialize_all(path)
-    if int(summary.get("matches_discovered", 0)) <= 0:
-        raise ValueError("No raw WhoScored matches discovered for canonical materialisation")
-    return summary
 
 
 class R2DuckDBStore:
