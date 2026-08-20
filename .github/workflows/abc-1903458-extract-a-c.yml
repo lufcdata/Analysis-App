@@ -38,11 +38,14 @@ jobs:
           C extraction is intentionally independent so cross-repository access cannot block database forensics.
           EOF
 
-      - name: Extract C evidence from R2 read-only
+      - name: Extract C event/stat evidence from R2 read-only
         run: |
           python v2/extract_abc_1903458.py \
             --out abc-1903458 \
             --r2-key football/staging/2025-26-whoscored-cards.duckdb
+
+      - name: Extract C match_passes evidence from R2 read-only
+        run: python v2/extract_match_passes_1903458.py
 
       - name: Upload C evidence and A reference
         uses: actions/upload-artifact@v4
