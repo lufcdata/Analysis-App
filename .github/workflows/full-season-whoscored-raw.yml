@@ -1,0 +1,90 @@
+name: Full Season WhoScored Raw Acquisition
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scrape-full-season-on-mac:
+    runs-on: self-hosted
+    timeout-minutes: 720
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Checkout Analysis-App
+        uses: actions/checkout@v4
+
+      - name: Confirm self-hosted Mac runner
+        run: |
+          echo "runner=$RUNNER_NAME"
+          echo "os=$RUNNER_OS"
+          echo "arch=$RUNNER_ARCH"
+          test "$RUNNER_OS" = "macOS"
+
+      - name: Install Python 3.12 with Homebrew if needed
+        run: |
+          set -euo pipefail
+          if command -v python3.12 >/dev/null 2>&1; then
+            PY312="$(command -v python3.12)"
+          elif [ -x /opt/homebrew/bin/python3.12 ]; then
+            PY312=/opt/homebrew/bin/python3.12
+          else
+            if ! command -v brew >/dev/null 2>&1; then
+              echo '::error::Homebrew is required on this self-hosted Mac runner to install Python 3.12.'
+              exit 1
+            fi
+            brew install python@3.12
+            PY312="$(brew --prefix python@3.12)/bin/python3.12"
+          fi
+          echo "PY312=$PY312" >> "$GITHUB_ENV"
+          "$PY312" --version
+
+      - name: Create isolated acquisition environment
+        run: |
+          rm -rf .venv-whoscored-season raw-season-2025-26
+          "$PY312" -m venv .venv-whoscored-season
+          .venv-whoscored-season/bin/python -m pip install --upgrade pip
+          .venv-whoscored-season/bin/python -m pip install 'soccerdata==1.9.1' pandas boto3
+
+      - name: Verify R2 destination secrets
+        run: |
+          set -euo pipefail
+          test -n "$R2_ACCOUNT_ID"
+          test -n "$R2_ACCESS_KEY_ID"
+          test -n "$R2_SECRET_ACCESS_KEY"
+          test -n "$R2_BUCKET"
+          echo 'R2 credentials present. Destination is NEW raw-only prefix: football/raw/whoscored/2025-26-v3/'
+
+      - name: Acquire all 380 raw matches and store immutably in R2
+        run: |
+          .venv-whoscored-season/bin/python v2/acquire_whoscored_raw_season.py
+
+      - name: Show run summary
+        if: always()
+        run: |
+          if [ -f raw-season-2025-26/run_summary.json ]; then
+            cat raw-season-2025-26/run_summary.json
+          else
+            echo 'No run summary produced.'
+          fi
+
+      - name: Upload small run evidence to GitHub
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whoscored-raw-season-run-${{ github.run_id }}
+          path: raw-season-2025-26/run_summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Storage safety confirmation
+        if: always()
+        run: |
+          echo 'This workflow does NOT write to the existing V2 DuckDB, staging DB, canonical DB, Render, or production.'
+          echo 'It writes only new immutable raw acquisition objects under football/raw/whoscored/2025-26-v3/.'
+          echo 'Per-match complete.json markers make reruns resumable.'
