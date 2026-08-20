@@ -43,6 +43,7 @@ def get_match_inventory(*, season_id: str | None = None, matchday: int | None = 
             args.append(int(matchday))
         where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
         matchday_select = 'm.matchday' if has_matchday else 'NULL AS matchday'
+        matchday_order = 'm.matchday NULLS LAST, ' if has_matchday else ''
         rows = conn.execute(
             f"""
             SELECT m.match_id, m.season_id, s.season_name, {matchday_select}, m.match_date, m.kickoff_time,
@@ -53,7 +54,7 @@ def get_match_inventory(*, season_id: str | None = None, matchday: int | None = 
             JOIN teams ht ON ht.team_id = m.home_team_id
             JOIN teams at ON at.team_id = m.away_team_id
             {where}
-            ORDER BY s.start_date, m.matchday NULLS LAST, m.match_date, m.kickoff_time, m.match_id
+            ORDER BY s.start_date, {matchday_order}m.match_date, m.kickoff_time, m.match_id
             """,
             args,
         ).fetchall()
