@@ -1,0 +1,78 @@
+name: A-B-C 1903458 SoccerData Comparison
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-soccerdata-on-mac:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Analysis-App
+        uses: actions/checkout@v4
+
+      - name: Confirm self-hosted Mac runner
+        run: |
+          echo "runner=$RUNNER_NAME"
+          echo "os=$RUNNER_OS"
+          echo "arch=$RUNNER_ARCH"
+          which python3
+          python3 --version
+
+      - name: Create isolated environment
+        run: |
+          rm -rf .venv-abc1903458 abc-1903458
+          python3 -m venv .venv-abc1903458
+          .venv-abc1903458/bin/python -m pip install --upgrade pip
+          .venv-abc1903458/bin/python -m pip install 'soccerdata==1.9.1' pandas
+
+      - name: Acquire B - fresh SoccerData match 1903458
+        run: |
+          mkdir -p abc-1903458
+          .venv-abc1903458/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          import soccerdata as sd
+
+          mid=1903458
+          out=Path('abc-1903458')
+          ws=sd.WhoScored(leagues='ENG-Premier League', seasons='2025', headless=False)
+          df=ws.read_events(match_id=mid)
+          flat=df.reset_index()
+          flat.to_csv(out/'B_soccerdata_events.csv', index=False)
+          flat.to_json(out/'B_soccerdata_events.json', orient='records', indent=2, force_ascii=False)
+          summary={'match_id':mid,'rows':len(flat),'columns':[str(c) for c in flat.columns]}
+          for c in ['type','outcome_type','player','x','y','end_x','end_y','qualifiers']:
+              if c in flat.columns: summary['non_null_'+c]=int(flat[c].notna().sum())
+          if 'type' in flat.columns:
+              summary['type_counts']={str(k):int(v) for k,v in flat['type'].value_counts(dropna=False).items()}
+          (out/'B_summary.json').write_text(json.dumps(summary,indent=2,default=str))
+          print(json.dumps(summary,indent=2,default=str))
+          try:
+              raw=ws.read_events(match_id=mid, output_fmt='raw')
+              if isinstance(raw,pd.DataFrame):
+                  raw.reset_index().to_json(out/'B_soccerdata_raw.json',orient='records',indent=2,force_ascii=False)
+              else:
+                  (out/'B_soccerdata_raw.json').write_text(json.dumps(raw,indent=2,default=str))
+              print('raw_output=success')
+          except Exception as exc:
+              (out/'B_raw_error.txt').write_text(repr(exc))
+              print('raw_output=unavailable',repr(exc))
+          PY
+
+      - name: Upload fresh B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: abc-1903458-fresh-${{ github.run_id }}
+          path: abc-1903458/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Safety confirmation
+        if: always()
+        run: echo 'Fresh B acquisition only. No R2 write, database mutation, or production deployment step exists.'
