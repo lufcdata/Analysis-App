@@ -34,7 +34,7 @@ def prepare_snapshot(*, publish: bool = False, force: bool = False) -> dict[str,
 
         published = False
         if publish:
-            store.client.upload_file(store.config.bucket, store.config.current_key, str(snapshot))
+            store.client.upload_file(str(snapshot), store.config.bucket, store.config.current_key)
             published = True
 
         return {
