@@ -1,0 +1,74 @@
+name: WhoScored Standard Selenium Canary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary-on-mac:
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Analysis-App
+        uses: actions/checkout@v4
+
+      - name: Confirm self-hosted Mac runner
+        run: |
+          echo "runner=$RUNNER_NAME"
+          echo "os=$RUNNER_OS"
+          echo "arch=$RUNNER_ARCH"
+          test "$RUNNER_OS" = "macOS"
+          test -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version
+
+      - name: Install Python 3.12 if needed
+        run: |
+          set -euo pipefail
+          if command -v python3.12 >/dev/null 2>&1; then
+            PY312="$(command -v python3.12)"
+          elif [ -x /opt/homebrew/bin/python3.12 ]; then
+            PY312=/opt/homebrew/bin/python3.12
+          else
+            brew install python@3.12
+            PY312="$(brew --prefix python@3.12)/bin/python3.12"
+          fi
+          echo "PY312=$PY312" >> "$GITHUB_ENV"
+          "$PY312" --version
+
+      - name: Create isolated standard Selenium environment
+        run: |
+          rm -rf .venv-standard-canary standard-selenium-canary
+          "$PY312" -m venv .venv-standard-canary
+          .venv-standard-canary/bin/python -m pip install --upgrade pip
+          .venv-standard-canary/bin/python -m pip install 'selenium==4.47.0'
+
+      - name: Run match 1903117 canary with standard Selenium
+        run: |
+          .venv-standard-canary/bin/python v2/standard_selenium_whoscored_canary.py
+
+      - name: Show canary summary
+        if: always()
+        run: |
+          if [ -f standard-selenium-canary/summary.json ]; then
+            cat standard-selenium-canary/summary.json
+          else
+            echo 'No summary.json produced.'
+          fi
+
+      - name: Upload canary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whoscored-standard-selenium-canary-${{ github.run_id }}
+          path: standard-selenium-canary/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Safety confirmation
+        if: always()
+        run: |
+          echo 'CANARY ONLY: one match (1903117).'
+          echo 'No SeleniumBase UC mode or patched uc_driver is used by this script.'
+          echo 'No R2, database, Render, or production writes occur in this workflow.'
