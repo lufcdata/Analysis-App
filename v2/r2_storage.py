@@ -43,7 +43,12 @@ class R2Config:
 
 
 def validate_duckdb(path: str | Path) -> dict[str, int]:
-    """Validate the immutable/base data required by the canonical production API."""
+    """Validate immutable/base tables without making canonical readiness fatal.
+
+    The API must be able to boot and expose diagnostics even when an older valid
+    snapshot has not yet been canonical-materialised. Metrics endpoints remain
+    strict and will not fabricate values; readiness is reported via /api/v2/health.
+    """
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
         raise ValueError(f"DuckDB file is missing or empty: {path}")
@@ -57,11 +62,14 @@ def validate_duckdb(path: str | Path) -> dict[str, int]:
         missing = sorted(required - existing)
         if missing:
             raise ValueError("DuckDB missing required base tables: " + ", ".join(missing))
-        raw_event_count = int(conn.execute(
-            "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
-        ).fetchone()[0])
-        if raw_event_count <= 0:
-            raise ValueError("DuckDB contains no full-fidelity raw WhoScored events")
+
+        event_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('match_events')").fetchall()}
+        raw_event_count = 0
+        if {"source", "event_type"}.issubset(event_columns):
+            raw_event_count = int(conn.execute(
+                "SELECT COUNT(*) FROM match_events WHERE lower(source)='whoscored' AND event_type='raw_whoscored'"
+            ).fetchone()[0])
+
         return {
             "matches": int(conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]),
             "player_match_rows": int(conn.execute("SELECT COUNT(*) FROM player_match_stats").fetchone()[0]),
