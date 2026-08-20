@@ -32,7 +32,7 @@ jobs:
           mkdir -p abc-1903458
           curl --fail --location \
             --output abc-1903458/A_golden_raw.json \
-            https://raw.githubusercontent.com/lufcdata/pitch-plot-app/main/v2/fixtures/whoscored/1903458.json
+            https://raw.githubusercontent.com/lufcdata/pitch-plot-app/9b8968eb2b5625f27e2b593d905dc425933e74a0/v2/fixtures/whoscored/1903458.json
           echo 'cb037d6c8c69b6d83a93fffbb404de92429c45268752d5f3d05d599edb145093  abc-1903458/A_golden_raw.json' | sha256sum --check -
 
       - name: Extract A and C evidence read-only
