@@ -76,12 +76,12 @@ def get_match_inventory(*, season_id: str | None = None, matchday: int | None = 
         rows = conn.execute(
             f"""
             SELECT m.match_id, m.season_id, s.season_name, {matchday_select}, m.match_date, {kickoff_select},
-                   m.home_team_id, ht.team_name, m.away_team_id, at.team_name,
+                   m.home_team_id, ht.team_name, m.away_team_id, awt.team_name,
                    {home_score_select}, {away_score_select}, {status_select}, {whoscored_select}, {sofascore_select}
             FROM matches m
             JOIN seasons s ON s.season_id = m.season_id
             JOIN teams ht ON ht.team_id = m.home_team_id
-            JOIN teams at ON at.team_id = m.away_team_id
+            JOIN teams awt ON awt.team_id = m.away_team_id
             {where}
             ORDER BY {order_by}
             """,
