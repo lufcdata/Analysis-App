@@ -1,0 +1,78 @@
+name: Rebuild Canonical R2 Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish verified canonical snapshot back to R2'
+        required: true
+        default: false
+        type: boolean
+      force_rematerialize:
+        description: 'Recompute canonical metrics even if already materialised'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-r2-rebuild
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    name: Canonical Metrics Bible rebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_CURRENT_KEY: ${{ secrets.R2_CURRENT_KEY }}
+      PUBLISH_CANONICAL_SNAPSHOT: ${{ inputs.publish && '1' || '0' }}
+      FORCE_CANONICAL_REMATERIALIZE: ${{ inputs.force_rematerialize && '1' || '0' }}
+
+    steps:
+      - name: Check out production branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate required R2 secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET R2_CURRENT_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured as a GitHub Actions secret"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Rebuild and verify canonical snapshot
+        run: python -m v2.prepare_canonical_snapshot
+
+      - name: Publish-mode confirmation
+        if: ${{ inputs.publish }}
+        run: |
+          echo "Canonical snapshot passed 100% readiness and was published to R2."
+          echo "R2 object: $R2_CURRENT_KEY"
+
+      - name: Dry-run confirmation
+        if: ${{ !inputs.publish }}
+        run: |
+          echo "Dry run completed. Canonical snapshot reached 100% readiness locally."
+          echo "R2 was NOT modified. Run again with publish=true only after reviewing this run."
