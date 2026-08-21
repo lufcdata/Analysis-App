@@ -19,14 +19,6 @@ type MatchPayload = { match: Match; players: Player[]; metrics: Metric[]; statis
 
 const API = process.env.NEXT_PUBLIC_MATCHLAB_API || 'http://localhost:8000';
 
-function extractEventId(value: string) {
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return trimmed;
-  const match = trimmed.match(/(?:id:|event\/)(\d+)/i) || trimmed.match(/[?&#]id=(\d+)/i);
-  if (!match) throw new Error('Could not find a SofaScore event ID in that URL.');
-  return match[1];
-}
-
 export default function Home() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [eventId, setEventId] = useState('');
@@ -41,7 +33,9 @@ export default function Home() {
   const [error, setError] = useState('');
 
   const refreshMatches = async (preferId?: string) => {
-    const rows: Match[] = await fetch(`${API}/matches`).then(r => r.json());
+    const response = await fetch(`${API}/matches`);
+    if (!response.ok) throw new Error('Could not reach the MatchLab API.');
+    const rows: Match[] = await response.json();
     setMatches(rows);
     if (preferId) setEventId(preferId);
     else if (!eventId && rows[0]) setEventId(rows[0].event_id);
@@ -74,32 +68,19 @@ export default function Home() {
     setImporting(true);
     setError('');
     try {
-      const id = extractEventId(sofaUrl);
-      const base = `https://api.sofascore.com/api/v1/event/${id}`;
-      const [basicRes, statsRes, lineupsRes] = await Promise.all([
-        fetch(base),
-        fetch(`${base}/statistics`),
-        fetch(`${base}/lineups`),
-      ]);
-      if (!basicRes.ok || !statsRes.ok || !lineupsRes.ok) {
-        throw new Error('Your browser reached SofaScore, but one or more match-data requests were rejected.');
-      }
-      const bundle = {
-        event_id: id,
-        basic: await basicRes.json(),
-        statistics: await statsRes.json(),
-        lineups: await lineupsRes.json(),
-      };
-      const imported = await fetch(`${API}/matches/import`, {
+      const imported = await fetch(`${API}/matches/import-sofascore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bundle),
+        body: JSON.stringify({ source: sofaUrl }),
       });
-      if (!imported.ok) throw new Error('MatchLab received the SofaScore data but could not save the match.');
-      await refreshMatches(id);
+      const result = await imported.json().catch(() => ({}));
+      if (!imported.ok) {
+        throw new Error(result.detail || 'MatchLab could not retrieve this match from SofaScore.');
+      }
+      await refreshMatches(String(result.event_id));
       setMode('match');
     } catch (e: any) {
-      setError(`${e.message} If this is a browser CORS restriction, we will switch the importer to the next ingestion method without changing the rest of MatchLab.`);
+      setError(e.message || 'Match import failed.');
     } finally {
       setImporting(false);
     }
@@ -139,7 +120,7 @@ export default function Home() {
 
         <span className="sidebarLabel">How this works</span>
         <div className="muted" style={{fontSize: 14, lineHeight: 1.55}}>
-          MatchLab first asks your browser to retrieve the SofaScore JSON, then stores one clean match bundle in the MatchLab API. Graphics never need to scrape the same match again.
+          Paste a SofaScore match URL. MatchLab sends it to the hosted MatchLab API, which retrieves the match data and stores one clean bundle for the graphics and leaderboards.
         </div>
       </aside>
 
