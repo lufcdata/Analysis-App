@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: matchlab-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r matchlab_web/backend/requirements.txt
+    startCommand: uvicorn matchlab_web.backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
