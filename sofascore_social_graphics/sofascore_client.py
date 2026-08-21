@@ -7,11 +7,26 @@ from typing import Any
 
 import requests
 
-BASE_URL = "https://www.sofascore.com/api/v1"
+# SofaScore's current API host. Keep the www host as a fallback because
+# behaviour can vary by network/provider.
+BASE_URLS = (
+    "https://api.sofascore.com/api/v1",
+    "https://www.sofascore.com/api/v1",
+)
+
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/150 Safari/537.36",
-    "Accept": "application/json,text/plain,*/*",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/150.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-GB,en;q=0.9",
     "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
+    "X-Requested-With": "XMLHttpRequest",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 
@@ -54,20 +69,34 @@ class SofaScoreClient:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _get_json(self, url: str) -> dict[str, Any]:
-        try:
-            response = self.session.get(url, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise SofaScoreError(f"Could not connect to SofaScore: {exc}") from exc
+    def _get_json(self, endpoint: str) -> dict[str, Any]:
+        errors: list[str] = []
 
-        if response.status_code == 429:
-            raise SofaScoreError("SofaScore rate-limited the request (HTTP 429). Try again later.")
-        if response.status_code != 200:
-            raise SofaScoreError(f"SofaScore returned HTTP {response.status_code} for {url}")
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise SofaScoreError("SofaScore returned a non-JSON response.") from exc
+        for base_url in BASE_URLS:
+            url = f"{base_url}{endpoint}"
+            try:
+                response = self.session.get(url, timeout=self.timeout)
+            except requests.RequestException as exc:
+                errors.append(f"{base_url}: connection error ({exc})")
+                continue
+
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except ValueError:
+                    errors.append(f"{base_url}: returned non-JSON content")
+                    continue
+
+            if response.status_code == 429:
+                errors.append(f"{base_url}: HTTP 429 rate limited")
+            else:
+                errors.append(f"{base_url}: HTTP {response.status_code}")
+
+        joined = " | ".join(errors)
+        raise SofaScoreError(
+            "Could not load this match from SofaScore. "
+            f"Tried the available API hosts: {joined}"
+        )
 
     def _fetch_slice(self, event_id: str, name: str, endpoint: str, refresh: bool) -> dict[str, Any]:
         target = self._event_dir(event_id) / f"{name}.json"
@@ -75,7 +104,7 @@ class SofaScoreClient:
             with target.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
 
-        data = self._get_json(f"{BASE_URL}{endpoint}")
+        data = self._get_json(endpoint)
         with target.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
         return data
@@ -84,6 +113,10 @@ class SofaScoreClient:
         event_id = str(event_id)
         return {
             "basic": self._fetch_slice(event_id, "basic", f"/event/{event_id}", refresh),
-            "statistics": self._fetch_slice(event_id, "statistics", f"/event/{event_id}/statistics", refresh),
-            "lineups": self._fetch_slice(event_id, "lineups", f"/event/{event_id}/lineups", refresh),
+            "statistics": self._fetch_slice(
+                event_id, "statistics", f"/event/{event_id}/statistics", refresh
+            ),
+            "lineups": self._fetch_slice(
+                event_id, "lineups", f"/event/{event_id}/lineups", refresh
+            ),
         }
