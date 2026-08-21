@@ -19,6 +19,14 @@ type MatchPayload = { match: Match; players: Player[]; metrics: Metric[]; statis
 
 const API = process.env.NEXT_PUBLIC_MATCHLAB_API || 'http://localhost:8000';
 
+function extractEventId(value: string) {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  const match = trimmed.match(/(?:id:|event\/)(\d+)/i) || trimmed.match(/[?&#]id=(\d+)/i);
+  if (!match) throw new Error('Could not find a SofaScore event ID in that URL.');
+  return match[1];
+}
+
 export default function Home() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [eventId, setEventId] = useState('');
@@ -28,13 +36,19 @@ export default function Home() {
   const [scope, setScope] = useState('all');
   const [metricKey, setMetricKey] = useState('');
   const [leaders, setLeaders] = useState<Leader[]>([]);
+  const [sofaUrl, setSofaUrl] = useState('https://www.sofascore.com/football/match/arsenal-west-ham-united/MR#id:14023942,tab:lineups');
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
 
+  const refreshMatches = async (preferId?: string) => {
+    const rows: Match[] = await fetch(`${API}/matches`).then(r => r.json());
+    setMatches(rows);
+    if (preferId) setEventId(preferId);
+    else if (!eventId && rows[0]) setEventId(rows[0].event_id);
+  };
+
   useEffect(() => {
-    fetch(`${API}/matches`).then(r => r.json()).then((rows: Match[]) => {
-      setMatches(rows);
-      if (rows[0]) setEventId(rows[0].event_id);
-    }).catch(() => setError('Could not reach the MatchLab API.'));
+    refreshMatches().catch(() => setError('Could not reach the MatchLab API.'));
   }, []);
 
   useEffect(() => {
@@ -56,6 +70,41 @@ export default function Home() {
       .then(r => r.json()).then(x => setLeaders(x.rows || [])).catch(() => setLeaders([]));
   }, [mode, eventId, metricKey, scope]);
 
+  const importFromSofaScore = async () => {
+    setImporting(true);
+    setError('');
+    try {
+      const id = extractEventId(sofaUrl);
+      const base = `https://api.sofascore.com/api/v1/event/${id}`;
+      const [basicRes, statsRes, lineupsRes] = await Promise.all([
+        fetch(base),
+        fetch(`${base}/statistics`),
+        fetch(`${base}/lineups`),
+      ]);
+      if (!basicRes.ok || !statsRes.ok || !lineupsRes.ok) {
+        throw new Error('Your browser reached SofaScore, but one or more match-data requests were rejected.');
+      }
+      const bundle = {
+        event_id: id,
+        basic: await basicRes.json(),
+        statistics: await statsRes.json(),
+        lineups: await lineupsRes.json(),
+      };
+      const imported = await fetch(`${API}/matches/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bundle),
+      });
+      if (!imported.ok) throw new Error('MatchLab received the SofaScore data but could not save the match.');
+      await refreshMatches(id);
+      setMode('match');
+    } catch (e: any) {
+      setError(`${e.message} If this is a browser CORS restriction, we will switch the importer to the next ingestion method without changing the rest of MatchLab.`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const selectedPlayer = useMemo(
     () => data?.players.find(p => String(p.id) === playerId),
     [data, playerId]
@@ -72,9 +121,15 @@ export default function Home() {
         <div className="brand">MatchLab V2</div>
         <div className="muted">Football performance graphics</div>
 
-        <span className="sidebarLabel">Imported match</span>
+        <span className="sidebarLabel">SofaScore match</span>
+        <input className="select" value={sofaUrl} onChange={e => setSofaUrl(e.target.value)} placeholder="Paste SofaScore URL or event ID" />
+        <button className="importButton" onClick={importFromSofaScore} disabled={importing}>
+          {importing ? 'Importing…' : 'Load Match'}
+        </button>
+
+        <span className="sidebarLabel">Imported matches</span>
         <select className="select" value={eventId} onChange={e => setEventId(e.target.value)}>
-          {!matches.length && <option>No imported matches</option>}
+          {!matches.length && <option value="">No imported matches</option>}
           {matches.map(m => (
             <option key={m.event_id} value={m.event_id}>
               {m.home_name} {m.home_score}–{m.away_score} {m.away_name}
@@ -82,9 +137,9 @@ export default function Home() {
           ))}
         </select>
 
-        <span className="sidebarLabel">Workflow</span>
+        <span className="sidebarLabel">How this works</span>
         <div className="muted" style={{fontSize: 14, lineHeight: 1.55}}>
-          SofaScore ingestion is deliberately separate from the hosted app. Once a match is imported, every graphic is available here without scraping SofaScore again.
+          MatchLab first asks your browser to retrieve the SofaScore JSON, then stores one clean match bundle in the MatchLab API. Graphics never need to scrape the same match again.
         </div>
       </aside>
 
@@ -101,7 +156,7 @@ export default function Home() {
           <button className={`tab ${mode === 'leaders' ? 'active' : ''}`} onClick={() => setMode('leaders')}>Metric Leaders</button>
         </div>
 
-        {!data ? <div className="card empty">Import a match into MatchLab to begin.</div> : (
+        {!data ? <div className="card empty">Paste a SofaScore match URL on the left to import your first match.</div> : (
           <div className="grid">
             <section className="card">
               {imageUrl && <img className="preview" src={imageUrl} alt="MatchLab 1080 by 1350 graphic preview" />}
