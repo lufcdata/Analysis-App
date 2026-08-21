@@ -107,7 +107,7 @@ else:
         hide_zero = st.checkbox("Hide zero-value statistics", value=True)
         rows, minutes = build_player_stat_rows(player.stats, hide_zero=hide_zero)
 
-        png = render_player_graphic(player.name, player.opponent, rows, minutes)
+        png = render_player_graphic(player.name, player.opponent, rows, minutes, team=player.team)
         st.download_button(
             "Download Player PNG",
             data=png,
