@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 
 type Match = {
   event_id: string;
@@ -16,6 +16,12 @@ type Player = { id: string | number; name: string; team: string; opponent: strin
 type Metric = { key: string; label: string };
 type Leader = { name: string; team: string; display: string; value?: number };
 type MatchPayload = { match: Match; players: Player[]; metrics: Metric[]; statistics: any[] };
+type MatchBundle = {
+  event_id: string;
+  basic: Record<string, any>;
+  statistics: Record<string, any>;
+  lineups: Record<string, any>;
+};
 
 const API = process.env.NEXT_PUBLIC_MATCHLAB_API || 'http://localhost:8000';
 
@@ -30,7 +36,9 @@ export default function Home() {
   const [leaders, setLeaders] = useState<Leader[]>([]);
   const [sofaUrl, setSofaUrl] = useState('https://www.sofascore.com/football/match/arsenal-west-ham-united/MR#id:14023942,tab:lineups');
   const [importing, setImporting] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const refreshMatches = async (preferId?: string) => {
     const response = await fetch(`${API}/matches`);
@@ -64,9 +72,43 @@ export default function Home() {
       .then(r => r.json()).then(x => setLeaders(x.rows || [])).catch(() => setLeaders([]));
   }, [mode, eventId, metricKey, scope]);
 
+  const importJsonFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setUploading(true);
+    setError('');
+    setNotice('');
+    try {
+      const text = await file.text();
+      const bundle = JSON.parse(text) as MatchBundle;
+      if (!bundle?.event_id || !bundle?.basic || !bundle?.statistics || !bundle?.lineups) {
+        throw new Error('That file is not a MatchLab match JSON. It must contain event_id, basic, statistics and lineups.');
+      }
+
+      const response = await fetch(`${API}/matches/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bundle),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'MatchLab could not upload this JSON file.');
+
+      await refreshMatches(String(result.event_id));
+      setMode('match');
+      setNotice(`Uploaded ${file.name}`);
+    } catch (e: any) {
+      setError(e.message || 'JSON upload failed.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const importFromSofaScore = async () => {
     setImporting(true);
     setError('');
+    setNotice('');
     try {
       const imported = await fetch(`${API}/matches/import-sofascore`, {
         method: 'POST',
@@ -75,12 +117,12 @@ export default function Home() {
       });
       const result = await imported.json().catch(() => ({}));
       if (!imported.ok) {
-        throw new Error(result.detail || 'MatchLab could not retrieve this match from SofaScore.');
+        throw new Error(result.detail || 'Hosted SofaScore import is unavailable. Use Upload Match JSON instead.');
       }
       await refreshMatches(String(result.event_id));
       setMode('match');
     } catch (e: any) {
-      setError(e.message || 'Match import failed.');
+      setError(e.message || 'Hosted import failed. Use Upload Match JSON instead.');
     } finally {
       setImporting(false);
     }
@@ -102,10 +144,19 @@ export default function Home() {
         <div className="brand">MatchLab V2</div>
         <div className="muted">Football performance graphics</div>
 
-        <span className="sidebarLabel">SofaScore match</span>
+        <span className="sidebarLabel">Upload match data</span>
+        <label className="importButton" style={{display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: uploading ? 'wait' : 'pointer'}}>
+          {uploading ? 'Uploading…' : 'Upload Match JSON'}
+          <input type="file" accept="application/json,.json" onChange={importJsonFile} disabled={uploading} style={{display: 'none'}} />
+        </label>
+        <div className="muted" style={{fontSize: 12, lineHeight: 1.45, marginTop: 8}}>
+          Recommended: create the JSON with the local MatchLab exporter on your Mac, then upload it here.
+        </div>
+
+        <span className="sidebarLabel">Hosted SofaScore import · fallback</span>
         <input className="select" value={sofaUrl} onChange={e => setSofaUrl(e.target.value)} placeholder="Paste SofaScore URL or event ID" />
         <button className="importButton" onClick={importFromSofaScore} disabled={importing}>
-          {importing ? 'Importing…' : 'Load Match'}
+          {importing ? 'Trying…' : 'Try Hosted Import'}
         </button>
 
         <span className="sidebarLabel">Imported matches</span>
@@ -120,7 +171,7 @@ export default function Home() {
 
         <span className="sidebarLabel">How this works</span>
         <div className="muted" style={{fontSize: 14, lineHeight: 1.55}}>
-          Paste a SofaScore match URL. MatchLab sends it to the hosted MatchLab API, which retrieves the match data and stores one clean bundle for the graphics and leaderboards.
+          Scrape the match locally on your Mac, upload the generated MatchLab JSON here once, then use the stored match for graphics, player statistics and metric leaders without scraping it again.
         </div>
       </aside>
 
@@ -129,6 +180,7 @@ export default function Home() {
         <p className="sub">Match Statistics · Player Statistics · Metric Leaders</p>
 
         {error && <div className="status">{error}</div>}
+        {notice && <div className="status">{notice}</div>}
         {data && <div className="status">Loaded · {data.match.home_name} {data.match.home_score}–{data.match.away_score} {data.match.away_name}</div>}
 
         <div className="tabs">
@@ -137,7 +189,7 @@ export default function Home() {
           <button className={`tab ${mode === 'leaders' ? 'active' : ''}`} onClick={() => setMode('leaders')}>Metric Leaders</button>
         </div>
 
-        {!data ? <div className="card empty">Paste a SofaScore match URL on the left to import your first match.</div> : (
+        {!data ? <div className="card empty">Upload a MatchLab JSON file on the left to import your first match.</div> : (
           <div className="grid">
             <section className="card">
               {imageUrl && <img className="preview" src={imageUrl} alt="MatchLab 1080 by 1350 graphic preview" />}
