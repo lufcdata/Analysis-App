@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -27,6 +26,7 @@ from parsers import (  # noqa: E402
 from metrics import available_player_metrics  # noqa: E402
 from renderer import render_match_graphic, render_player_graphic  # noqa: E402
 from leader_renderer import render_metric_leaders  # noqa: E402
+from sofascore_client import SofaScoreClient, SofaScoreError  # noqa: E402
 
 DATA_DIR = ROOT / "matchlab_web" / "data" / "matches"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,48 +72,30 @@ def _extract_event_id(value: str) -> str:
     return match.group(1)
 
 
-async def _fetch_sofascore_json(client: httpx.AsyncClient, path: str) -> dict[str, Any]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Referer": "https://www.sofascore.com/",
-        "Origin": "https://www.sofascore.com",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    attempts: list[str] = []
-    for host in ("https://www.sofascore.com/api/v1", "https://api.sofascore.com/api/v1"):
-        url = f"{host}{path}"
-        try:
-            response = await client.get(url, headers=headers)
-        except Exception as exc:
-            attempts.append(f"{url}: {type(exc).__name__}")
-            continue
-        if response.is_success:
-            return response.json()
-        attempts.append(f"{url}: HTTP {response.status_code}")
-    raise HTTPException(status_code=502, detail="SofaScore blocked the hosted importer. " + " | ".join(attempts))
-
-
 @app.get("/health")
 def health():
     return {"ok": True, "service": "matchlab-api"}
 
 
 @app.post("/matches/import-sofascore")
-async def import_sofascore(request: SofaScoreImportRequest):
+def import_sofascore(request: SofaScoreImportRequest):
     event_id = _extract_event_id(request.source)
-    timeout = httpx.Timeout(20.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        basic = await _fetch_sofascore_json(client, f"/event/{event_id}")
-        statistics = await _fetch_sofascore_json(client, f"/event/{event_id}/statistics")
-        lineups = await _fetch_sofascore_json(client, f"/event/{event_id}/lineups")
+    client = SofaScoreClient(cache_dir=DATA_DIR / "_sofascore_cache", timeout=20)
+    try:
+        match_data = client.fetch_match(event_id, refresh=True)
+    except SofaScoreError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"MatchLab importer failed before the match could be stored: {type(exc).__name__}: {exc}",
+        ) from exc
+
     payload = {
         "event_id": event_id,
-        "basic": basic,
-        "statistics": statistics,
-        "lineups": lineups,
+        "basic": match_data["basic"],
+        "statistics": match_data["statistics"],
+        "lineups": match_data["lineups"],
     }
     _path(event_id).write_text(json.dumps(payload, ensure_ascii=False))
     return {"ok": True, "event_id": event_id}
