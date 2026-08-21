@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from metrics import format_metric_value, player_metric_value
+from metrics import build_canonical_player_rows, format_metric_value, player_metric_value
 
 
 @dataclass
@@ -109,114 +109,10 @@ def extract_players(lineups_payload: dict[str, Any], match: MatchInfo) -> list[P
     return players
 
 
-LABELS = {
-    "goals": "Goals",
-    "goalAssist": "Assists",
-    "totalShots": "Shots",
-    "onTargetScoringAttempt": "Shots On-Target",
-    "shotOffTarget": "Shots off target",
-    "blockedScoringAttempt": "Shots blocked",
-    "bigChanceCreated": "Big chances created",
-    "bigChanceMissed": "Big chances missed",
-    "keyPass": "Chances Created",
-    "touches": "Touches",
-    "totalPass": "Total Passes",
-    "accuratePass": "Successful Passes",
-    "totalLongBalls": "Long balls attempted",
-    "accurateLongBalls": "Accurate Long Passes",
-    "totalCross": "Crosses attempted",
-    "accurateCross": "Accurate Crosses",
-    "totalContest": "Take-ons attempted",
-    "wonContest": "Successful Take-Ons",
-    "duelWon": "Duels Won",
-    "duelLost": "Duels lost",
-    "groundDuelWon": "Ground Duels Won",
-    "groundDuelLost": "Ground duels lost",
-    "aerialWon": "Aerial Duels Won",
-    "aerialLost": "Aerial duels lost",
-    "totalTackle": "Tackles Won",
-    "interceptionWon": "Interceptions",
-    "ballRecovery": "Ball Recoveries",
-    "totalClearance": "Clearances",
-    "outfielderBlock": "Blocks",
-    "wasFouled": "Fouled",
-    "fouls": "Fouls",
-    "possessionLostCtrl": "Possession Lost",
-    "saves": "Saves",
-    "savedShotsFromInsideTheBox": "Saves inside box",
-    "goalsPrevented": "Goals prevented",
-    "expectedGoals": "xG",
-    "touchesInOppBox": "Opposition Box Touches",
-    "progressiveCarries": "Progressive Carries",
-    "progressiveCarryingDistance": "Progressive Carrying Distance (m)",
-    "finalThirdEntries": "Final Third Entries",
-    "accurateFinalThirdPasses": "Successful Final Third Passes",
-}
-
-PAIR_FIELDS = [
-    ("accuratePass", "totalPass", "Successful Passes"),
-    ("accurateLongBalls", "totalLongBalls", "Accurate Long Passes"),
-    ("accurateCross", "totalCross", "Accurate Crosses"),
-    ("wonContest", "totalContest", "Successful Take-Ons"),
-]
-
-EXCLUDED_KEYS = {
-    "rating",
-    "minutesPlayed",
-    "accuratePass",
-    "totalPass",
-    "accurateLongBalls",
-    "totalLongBalls",
-    "accurateCross",
-    "totalCross",
-    "wonContest",
-    "totalContest",
-}
-
-
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
-
-
 def build_player_stat_rows(stats: dict[str, Any], hide_zero: bool = True) -> tuple[list[dict[str, Any]], Any]:
-    rows: list[dict[str, Any]] = []
-    used = set()
-
-    for success_key, total_key, label in PAIR_FIELDS:
-        success = stats.get(success_key)
-        total = stats.get(total_key)
-        success_num = _number(success)
-        total_num = _number(total)
-        if success_num is None and total_num is None:
-            continue
-        rank = success_num if success_num is not None else 0.0
-        if hide_zero and rank == 0 and (total_num or 0) == 0:
-            continue
-        display = f"{int(success_num or 0)}/{int(total_num or 0)}"
-        rows.append({"label": label, "display": display, "rank": rank})
-        used.update({success_key, total_key})
-
-    for key, value in stats.items():
-        if key in EXCLUDED_KEYS or key in used:
-            continue
-        num = _number(value)
-        if num is None:
-            continue
-        if hide_zero and num == 0:
-            continue
-        label = LABELS.get(key)
-        if not label:
-            continue
-        display = str(int(num)) if float(num).is_integer() else f"{num:g}"
-        rows.append({"label": label, "display": display, "rank": num})
-
-    rows.sort(key=lambda row: (-row["rank"], row["label"]))
-    minutes = stats.get("minutesPlayed")
-    return rows, minutes
+    # Single source of truth: public labels, ordering and supported player metrics
+    # all come from metrics.METRICS, exactly like Metric Leaders.
+    return build_canonical_player_rows(stats, hide_zero=hide_zero)
 
 
 def build_metric_leader_rows(players: list[PlayerOption], metric: dict[str, Any], scope: str = "all") -> list[dict[str, Any]]:
