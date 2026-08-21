@@ -105,7 +105,7 @@ def health():
 async def import_sofascore(request: SofaScoreImportRequest):
     event_id = _extract_event_id(request.source)
     timeout = httpx.Timeout(20.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, http2=True) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         basic = await _fetch_sofascore_json(client, f"/event/{event_id}")
         statistics = await _fetch_sofascore_json(client, f"/event/{event_id}/statistics")
         lineups = await _fetch_sofascore_json(client, f"/event/{event_id}/lineups")
