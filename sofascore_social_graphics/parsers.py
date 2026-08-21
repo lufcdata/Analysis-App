@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from metrics import format_metric_value, player_metric_value
+
 
 @dataclass
 class MatchInfo:
@@ -111,45 +113,51 @@ LABELS = {
     "goals": "Goals",
     "goalAssist": "Assists",
     "totalShots": "Shots",
-    "onTargetScoringAttempt": "Shots on target",
+    "onTargetScoringAttempt": "Shots On-Target",
     "shotOffTarget": "Shots off target",
     "blockedScoringAttempt": "Shots blocked",
     "bigChanceCreated": "Big chances created",
     "bigChanceMissed": "Big chances missed",
-    "keyPass": "Chances created",
+    "keyPass": "Chances Created",
     "touches": "Touches",
-    "totalPass": "Passes",
-    "accuratePass": "Accurate passes",
+    "totalPass": "Total Passes",
+    "accuratePass": "Successful Passes",
     "totalLongBalls": "Long balls attempted",
-    "accurateLongBalls": "Accurate long balls",
+    "accurateLongBalls": "Accurate Long Passes",
     "totalCross": "Crosses attempted",
-    "accurateCross": "Accurate crosses",
-    "totalContest": "Dribbles attempted",
-    "wonContest": "Successful dribbles",
-    "duelWon": "Duels won",
+    "accurateCross": "Accurate Crosses",
+    "totalContest": "Take-ons attempted",
+    "wonContest": "Successful Take-Ons",
+    "duelWon": "Duels Won",
     "duelLost": "Duels lost",
-    "groundDuelWon": "Ground duels won",
+    "groundDuelWon": "Ground Duels Won",
     "groundDuelLost": "Ground duels lost",
-    "aerialWon": "Aerial duels won",
+    "aerialWon": "Aerial Duels Won",
     "aerialLost": "Aerial duels lost",
-    "totalTackle": "Tackles",
+    "totalTackle": "Tackles Won",
     "interceptionWon": "Interceptions",
-    "ballRecovery": "Ball recoveries",
+    "ballRecovery": "Ball Recoveries",
     "totalClearance": "Clearances",
     "outfielderBlock": "Blocks",
-    "wasFouled": "Fouls won",
-    "fouls": "Fouls committed",
-    "possessionLostCtrl": "Possession lost",
+    "wasFouled": "Fouled",
+    "fouls": "Fouls",
+    "possessionLostCtrl": "Possession Lost",
     "saves": "Saves",
     "savedShotsFromInsideTheBox": "Saves inside box",
     "goalsPrevented": "Goals prevented",
+    "expectedGoals": "xG",
+    "touchesInOppBox": "Opposition Box Touches",
+    "progressiveCarries": "Progressive Carries",
+    "progressiveCarryingDistance": "Progressive Carrying Distance (m)",
+    "finalThirdEntries": "Final Third Entries",
+    "accurateFinalThirdPasses": "Successful Final Third Passes",
 }
 
 PAIR_FIELDS = [
-    ("accuratePass", "totalPass", "Accurate passes"),
-    ("accurateLongBalls", "totalLongBalls", "Long balls (accurate)"),
-    ("accurateCross", "totalCross", "Crosses (accurate)"),
-    ("wonContest", "totalContest", "Dribbles (successful)"),
+    ("accuratePass", "totalPass", "Successful Passes"),
+    ("accurateLongBalls", "totalLongBalls", "Accurate Long Passes"),
+    ("accurateCross", "totalCross", "Accurate Crosses"),
+    ("wonContest", "totalContest", "Successful Take-Ons"),
 ]
 
 EXCLUDED_KEYS = {
@@ -209,3 +217,28 @@ def build_player_stat_rows(stats: dict[str, Any], hide_zero: bool = True) -> tup
     rows.sort(key=lambda row: (-row["rank"], row["label"]))
     minutes = stats.get("minutesPlayed")
     return rows, minutes
+
+
+def build_metric_leader_rows(players: list[PlayerOption], metric: dict[str, Any], scope: str = "all") -> list[dict[str, Any]]:
+    filtered = players
+    if scope in {"home", "away"}:
+        filtered = [p for p in players if p.side == scope]
+
+    rows: list[dict[str, Any]] = []
+    for player in filtered:
+        value = player_metric_value(player.stats, metric)
+        if value is None:
+            continue
+        rows.append(
+            {
+                "name": player.name,
+                "team": player.team,
+                "value": value,
+                "display": format_metric_value(value, metric),
+            }
+        )
+
+    rows.sort(key=lambda row: (-row["value"], row["name"]))
+    for idx, row in enumerate(rows, start=1):
+        row["rank"] = idx
+    return rows
