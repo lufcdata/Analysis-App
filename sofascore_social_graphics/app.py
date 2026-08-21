@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import streamlit as st
 
-from parsers import build_player_stat_rows, extract_match_statistics, extract_players, parse_match_info
+from leader_renderer import render_metric_leaders
+from metrics import available_player_metrics
+from parsers import (
+    build_metric_leader_rows,
+    build_player_stat_rows,
+    extract_match_statistics,
+    extract_players,
+    parse_match_info,
+)
 from renderer import render_match_graphic, render_player_graphic
 from sofascore_client import SofaScoreClient, SofaScoreError, extract_event_id
 
-st.set_page_config(page_title="MatchLab", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="MatchLab V2", page_icon="⚽", layout="wide")
 
 st.markdown(
     """
@@ -52,8 +60,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("MatchLab")
-st.caption("SofaScore match and player performance graphics · 1080 × 1350")
+st.title("MatchLab V2")
+st.caption("Match statistics · Player performance · Metric leaders · 1080 × 1350")
 
 client = SofaScoreClient()
 
@@ -86,7 +94,11 @@ st.success(f"Loaded · {match.home_name} {match.home_score}–{match.away_score}
 if match.tournament or match.date_text:
     st.caption(" · ".join(x for x in (match.tournament, match.date_text) if x))
 
-graphic_type = st.radio("Graphic", ["Match Statistics", "Player Statistics"], horizontal=True)
+graphic_type = st.radio(
+    "Graphic",
+    ["Match Statistics", "Player Statistics", "Metric Leaders"],
+    horizontal=True,
+)
 
 if graphic_type == "Match Statistics":
     png = render_match_graphic(match, match_rows)
@@ -107,7 +119,7 @@ if graphic_type == "Match Statistics":
         with st.expander("View all statistics"):
             st.dataframe(match_rows, width="stretch", hide_index=True)
 
-else:
+elif graphic_type == "Player Statistics":
     if not players:
         st.warning("No player statistics were returned in this match's lineups payload.")
         st.stop()
@@ -135,6 +147,49 @@ else:
         with st.expander("Inspect player data"):
             st.dataframe(rows, width="stretch", hide_index=True)
             st.json(player.stats)
+
+    with preview_col:
+        st.image(png, caption="1080 × 1350 preview", width=540)
+
+else:
+    if not players:
+        st.warning("No player statistics were returned in this match's lineups payload.")
+        st.stop()
+
+    metrics = available_player_metrics(players)
+    if not metrics:
+        st.warning("No MatchLab leaderboard metrics are available in this match's lineup data.")
+        st.stop()
+
+    control_col, preview_col = st.columns([0.9, 2.1], gap="large")
+    with control_col:
+        st.subheader("Metric Leaders")
+        scope_options = {
+            "All Players": ("all", "ALL PLAYERS"),
+            f"Team A · {match.home_name}": ("home", f"TEAM A · {match.home_name.upper()}"),
+            f"Team B · {match.away_name}": ("away", f"TEAM B · {match.away_name.upper()}"),
+        }
+        scope_choice = st.selectbox("Players", list(scope_options.keys()))
+        scope, scope_label = scope_options[scope_choice]
+
+        metric_labels = [m["label"] for m in metrics]
+        metric_label = st.selectbox("Metric", metric_labels)
+        metric = next(m for m in metrics if m["label"] == metric_label)
+
+        leaders = build_metric_leader_rows(players, metric, scope=scope)
+        png = render_metric_leaders(match, metric_label, scope_label, leaders)
+
+        st.caption(f"{len(leaders)} players ranked · highest value first")
+        st.download_button(
+            "Download Leaders PNG",
+            data=png,
+            file_name=f"{match.event_id}_{metric_label.lower().replace(' ', '_').replace('-', '_')}_leaders.png",
+            mime="image/png",
+            type="primary",
+            width="stretch",
+        )
+        with st.expander("View leaderboard data"):
+            st.dataframe(leaders, width="stretch", hide_index=True)
 
     with preview_col:
         st.image(png, caption="1080 × 1350 preview", width=540)
