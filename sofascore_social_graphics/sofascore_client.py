@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from curl_cffi import requests as curl_requests
 
-# SofaScore's current API host. Keep the www host as a fallback because
-# behaviour can vary by network/provider.
 BASE_URLS = (
     "https://api.sofascore.com/api/v1",
     "https://www.sofascore.com/api/v1",
@@ -69,33 +68,61 @@ class SofaScoreClient:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @staticmethod
+    def _json_or_none(response: Any) -> dict[str, Any] | None:
+        if getattr(response, "status_code", None) != 200:
+            return None
+        try:
+            return response.json()
+        except Exception:
+            return None
+
     def _get_json(self, endpoint: str) -> dict[str, Any]:
         errors: list[str] = []
 
+        # First try a real browser TLS fingerprint. Hosted platforms often receive
+        # a Cloudflare 403 even when ordinary requests headers look browser-like.
+        for base_url in BASE_URLS:
+            url = f"{base_url}{endpoint}"
+            try:
+                response = curl_requests.get(
+                    url,
+                    headers=DEFAULT_HEADERS,
+                    impersonate="chrome",
+                    timeout=self.timeout,
+                )
+                data = self._json_or_none(response)
+                if data is not None:
+                    return data
+                errors.append(
+                    f"browser transport {base_url}: HTTP {getattr(response, 'status_code', '?')}"
+                )
+            except Exception as exc:
+                errors.append(f"browser transport {base_url}: {type(exc).__name__}")
+
+        # Keep the simpler requests transport as a fallback and as useful diagnostics.
         for base_url in BASE_URLS:
             url = f"{base_url}{endpoint}"
             try:
                 response = self.session.get(url, timeout=self.timeout)
             except requests.RequestException as exc:
-                errors.append(f"{base_url}: connection error ({exc})")
+                errors.append(f"requests {base_url}: connection error ({exc})")
                 continue
 
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError:
-                    errors.append(f"{base_url}: returned non-JSON content")
-                    continue
+            data = self._json_or_none(response)
+            if data is not None:
+                return data
 
             if response.status_code == 429:
-                errors.append(f"{base_url}: HTTP 429 rate limited")
+                errors.append(f"requests {base_url}: HTTP 429 rate limited")
             else:
-                errors.append(f"{base_url}: HTTP {response.status_code}")
+                errors.append(f"requests {base_url}: HTTP {response.status_code}")
 
         joined = " | ".join(errors)
         raise SofaScoreError(
             "Could not load this match from SofaScore. "
-            f"Tried the available API hosts: {joined}"
+            "The hosted app tried browser-impersonated and standard HTTP transports. "
+            f"Results: {joined}"
         )
 
     def _fetch_slice(self, event_id: str, name: str, endpoint: str, refresh: bool) -> dict[str, Any]:
