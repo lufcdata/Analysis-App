@@ -33,27 +33,34 @@ if load_clicked or "match_payload" not in st.session_state:
             st.session_state.match_payload=client.fetch_match(event_id,refresh=refresh); st.session_state.event_id=event_id
     except (ValueError,SofaScoreError) as exc: st.error(str(exc)); st.stop()
 
-payload=st.session_state.match_payload; match=parse_match_info(payload["basic"]); players=extract_players(payload["lineups"],match)
+payload=st.session_state.match_payload; match=parse_match_info(payload["basic"]); players=extract_players(payload["lineups"],match); player_actions=payload.get("player_actions",{}) or {}
 st.success(f"Loaded · {match.home_name} {match.home_score}–{match.away_score} {match.away_name}")
 if match.tournament or match.date_text: st.caption(" · ".join(x for x in (match.tournament,match.date_text) if x))
+with st.expander("Half-stat data diagnostic",expanded=False):
+    st.write(f"Player action streams returned: **{len(player_actions)} / {len(players)} players**")
+    if player_actions:
+        action_players=[p for p in players if str(p.player_id) in player_actions]
+        diagnostic_name=st.selectbox("Inspect action stream",[p.name for p in action_players],key="action_diag_player") if action_players else None
+        if diagnostic_name:
+            diagnostic_player=next(p for p in action_players if p.name==diagnostic_name)
+            st.json(player_actions.get(str(diagnostic_player.player_id),{}))
+    else:
+        st.info("No rating/action stream was returned for this match. This is useful evidence: half-specific player buttons remain locked rather than showing estimated data.")
 graphic_type=st.radio("Graphic",["Match Statistics","Player Statistics","Metric Leaders"],horizontal=True)
 
 if graphic_type=="Match Statistics":
     periods=available_match_periods(payload["statistics"])
     if not periods: st.warning("No period-specific match statistics were returned by SofaScore."); st.stop()
     period_map={label:key for key,label in periods}; period_label=st.radio("Period",list(period_map.keys()),horizontal=True); period_key=period_map[period_label]
-    match_rows=extract_match_statistics(payload["statistics"],period=period_key)
-    png=render_match_graphic(match,match_rows); preview_col,action_col=st.columns([2.15,.85],gap="large")
+    match_rows=extract_match_statistics(payload["statistics"],period=period_key); png=render_match_graphic(match,match_rows); preview_col,action_col=st.columns([2.15,.85],gap="large")
     with preview_col: st.image(png,caption=f"{period_label} · 1080 × 1350 preview",width=540)
     with action_col:
         st.subheader("Match Statistics"); st.caption(f"Real SofaScore {period_label.lower()} statistics. No full-match values are divided or estimated.")
         st.download_button("Download PNG",data=png,file_name=f"{match.event_id}_{period_key.lower()}_match_stats.png",mime="image/png",type="primary",width="stretch")
         with st.expander("View all statistics"): st.dataframe(match_rows,width="stretch",hide_index=True)
-
 elif graphic_type=="Player Statistics":
     if not players: st.warning("No player statistics were returned in this match's lineups payload."); st.stop()
-    st.radio("Period",["Full Match","1st Half","2nd Half"],horizontal=True,key="player_period",disabled=True)
-    st.caption("Half-specific Player Stats will unlock only from event-derived player actions. MatchLab will not estimate them from full-match totals.")
+    st.radio("Period",["Full Match","1st Half","2nd Half"],horizontal=True,key="player_period",disabled=True); st.caption("Half-specific Player Stats unlock only from genuine player action data; MatchLab never estimates them from full-match totals.")
     control_col,preview_col=st.columns([.9,2.1],gap="large")
     with control_col:
         st.subheader("Player"); teams=list(dict.fromkeys(p.team for p in players)); team=st.selectbox("Team",teams); team_players=[p for p in players if p.team==team]
@@ -62,21 +69,16 @@ elif graphic_type=="Player Statistics":
         st.download_button("Download Player PNG",data=png,file_name=f"{match.event_id}_{player.name.lower().replace(' ','_')}.png",mime="image/png",type="primary",width="stretch")
         with st.expander("Inspect player data"): st.dataframe(rows,width="stretch",hide_index=True); st.json(player.stats)
     with preview_col: st.image(png,caption="Full Match · 1080 × 1350 preview",width=540)
-
 else:
     if not players: st.warning("No player statistics were returned in this match's lineups payload."); st.stop()
-    st.radio("Period",["Full Match","1st Half","2nd Half"],horizontal=True,key="leaders_period",disabled=True)
-    st.caption("Half-specific Metric Leaders will re-rank from event-derived player actions; they are deliberately disabled until that data is available.")
+    st.radio("Period",["Full Match","1st Half","2nd Half"],horizontal=True,key="leaders_period",disabled=True); st.caption("Half-specific Metric Leaders will re-rank from genuine player actions and remain locked until those actions are validated.")
     metrics=available_player_metrics(players)
     if not metrics: st.warning("No MatchLab leaderboard metrics are available in this match's lineup data."); st.stop()
     control_col,preview_col=st.columns([.9,2.1],gap="large")
     with control_col:
-        st.subheader("Metric Leaders")
-        scope_options={"All Players":("all","ALL PLAYERS"),f"Team A · {match.home_name}":("home",f"TEAM A · {match.home_name.upper()}"),f"Team B · {match.away_name}":("away",f"TEAM B · {match.away_name.upper()}")}
-        scope_choice=st.selectbox("Players",list(scope_options.keys())); scope,scope_label=scope_options[scope_choice]
-        metric_labels=[m["label"] for m in metrics]; metric_label=st.selectbox("Metric",metric_labels); metric=next(m for m in metrics if m["label"]==metric_label)
-        leaders=build_metric_leader_rows(players,metric,scope=scope); png=render_metric_leaders(match,metric_label,scope_label,leaders)
-        st.caption(f"{len(leaders)} players ranked · highest value first")
+        st.subheader("Metric Leaders"); scope_options={"All Players":("all","ALL PLAYERS"),f"Team A · {match.home_name}":("home",f"TEAM A · {match.home_name.upper()}"),f"Team B · {match.away_name}":("away",f"TEAM B · {match.away_name.upper()}")}
+        scope_choice=st.selectbox("Players",list(scope_options.keys())); scope,scope_label=scope_options[scope_choice]; metric_labels=[m["label"] for m in metrics]; metric_label=st.selectbox("Metric",metric_labels); metric=next(m for m in metrics if m["label"]==metric_label)
+        leaders=build_metric_leader_rows(players,metric,scope=scope); png=render_metric_leaders(match,metric_label,scope_label,leaders); st.caption(f"{len(leaders)} players ranked · highest value first")
         st.download_button("Download Leaders PNG",data=png,file_name=f"{match.event_id}_{metric_label.lower().replace(' ','_').replace('-','_')}_leaders.png",mime="image/png",type="primary",width="stretch")
         with st.expander("View leaderboard data"): st.dataframe(leaders,width="stretch",hide_index=True)
     with preview_col: st.image(png,caption="Full Match · 1080 × 1350 preview",width=540)
