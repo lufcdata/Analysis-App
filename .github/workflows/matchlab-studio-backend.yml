@@ -21,6 +21,7 @@ jobs:
       - name: Compile Studio backend
         run: |
           python -m py_compile \
+            matchlab_web/backend/main.py \
             matchlab_web/backend/studio_entry.py \
             matchlab_web/backend/studio_main.py \
             v2/matchday_studio_contract.py \
@@ -49,7 +50,10 @@ jobs:
           from pathlib import Path
 
           entry = Path('matchlab_web/backend/studio_entry.py').read_text()
-          required = [
+          studio = Path('matchlab_web/backend/studio_main.py').read_text()
+          importer = Path('matchlab_web/backend/main.py').read_text()
+
+          required_entry = [
               '/studio-match-stats',
               'first_half',
               'second_half',
@@ -58,12 +62,28 @@ jobs:
               '/team-logos/{team_slug}.png',
               '/player-images/{player_slug}.png',
           ]
-          missing = [item for item in required if item not in entry]
+          missing = [item for item in required_entry if item not in entry]
           if missing:
               raise SystemExit(f'Missing Studio safety contract(s): {missing}')
+
+          required_period = [
+              '/matches/{event_id}/period-capabilities',
+              '_raw_period_available',
+              'Half-specific Player Stats are unavailable',
+              'Half-specific Metric Leaders are unavailable',
+              'estimates are forbidden',
+          ]
+          missing = [item for item in required_period if item not in studio]
+          if missing:
+              raise SystemExit(f'Missing honest player/leader period gate(s): {missing}')
+
+          if '"player_actions": match_data.get("player_actions", {}) or {}' not in importer:
+              raise SystemExit('Importer must preserve genuine player action streams')
+
           forbidden = ['api.sofascore.com/api/v1/player', 'api.sofascore.com/api/v1/team']
-          found = [item for item in forbidden if item in entry]
+          found = [item for item in forbidden if item in entry or item in studio]
           if found:
               raise SystemExit(f'Forbidden SofaScore imagery endpoint found: {found}')
-          print('Period handling and local-only imagery contract verified')
+
+          print('Period handling, action preservation and local-only imagery contracts verified')
           PY
