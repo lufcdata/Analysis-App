@@ -11,20 +11,20 @@ METRICS: list[dict[str, Any]] = [
     {"label": "Goals", "sofascore": "Goals", "match_keys": ["goals"], "player_keys": ["goals"]},
     {"label": "xG", "sofascore": "Expected Goals (xG)", "match_aliases": ["Expected goals"], "match_keys": ["expectedGoals"], "player_keys": ["expectedGoals", "expectedGoalsValue"]},
     {"label": "Possession", "sofascore": "Ball Possession", "match_aliases": ["Ball possession"], "match_keys": ["ballPossession"], "player_keys": ["ballPossession", "possession"]},
-    {"label": "Touches", "sofascore": "Touches in opposition box", "match_aliases": ["Touches in Opposition Box"], "match_keys": ["touchesInOppBox"], "player_keys": ["touchesInOppBox", "touchesInOppositionBox"]},
-    {"label": "Opposition Box Touches", "sofascore": "Penalty Box Touches", "match_aliases": ["Penalty box touches", "Touches in penalty area"], "match_keys": ["penaltyBoxTouches", "touchesInPenaltyArea"], "player_keys": ["penaltyBoxTouches"]},
+    {"label": "Touches", "sofascore": "Touches in opposition box", "match_aliases": ["Touches in Opposition Box"], "match_keys": ["touchesInOppBox", "touchesInOppositionBox"], "player_keys": ["touchesInOppBox", "touchesInOppositionBox"]},
+    {"label": "Opposition Box Touches", "sofascore": "Penalty Box Touches", "match_aliases": ["Penalty box touches", "Touches in penalty area", "Touches in penalty box", "Touches inside opposition box"], "match_keys": ["penaltyBoxTouches", "touchesInPenaltyArea", "touchesInPenaltyBox", "touchesInsideOppositionBox"], "player_keys": ["penaltyBoxTouches", "touchesInPenaltyArea"]},
     {"label": "Shots", "sofascore": "Total Shots", "match_aliases": ["Total shots"], "match_keys": ["totalShotsOnGoal", "totalShots"], "player_keys": ["totalShots"]},
     {"label": "Shots On-Target", "sofascore": "Shots on target", "match_keys": ["shotsOnGoal", "shotsOnTarget"], "player_keys": ["onTargetScoringAttempt", "shotsOnTarget"]},
     {"label": "Shots Outside Box", "sofascore": "Shots outside box", "match_keys": ["totalShotsOutsideBox", "shotsOutsideBox"], "player_keys": ["shotFromOutsideTheBox", "shotsOutsideBox", "shotsFromOutsideTheBox"]},
     {"label": "Big Chances", "sofascore": "Big Chances", "match_aliases": ["Big chances"], "match_keys": ["bigChanceCreated", "bigChances"], "player_keys": ["bigChances", "bigChance", "bigChanceCreated"]},
-    {"label": "Chances Created", "sofascore": "Key Passes", "match_aliases": ["Key passes"], "match_keys": ["keyPasses", "keyPass"], "player_keys": ["keyPass", "keyPasses"]},
+    {"label": "Chances Created", "sofascore": "Key Passes", "match_aliases": ["Key passes", "Key Pass", "Chances created"], "match_keys": ["keyPasses", "keyPass", "chancesCreated"], "player_keys": ["keyPass", "keyPasses", "chancesCreated"]},
     {"label": "Successful Passes", "sofascore": "Accurate Passes", "match_aliases": ["Accurate passes"], "match_keys": ["accuratePasses"], "player_keys": ["accuratePass", "accuratePasses"]},
     {"label": "Total Passes", "sofascore": "Passes", "match_aliases": ["Total passes"], "match_keys": ["passes", "totalPasses"], "player_keys": ["totalPass", "totalPasses"]},
     {"label": "Successful Final Third Passes", "sofascore": "Passes In Final Third", "match_aliases": ["Passes in final third"], "match_keys": ["finalThirdPhaseStatistic", "accurateFinalThirdPasses", "passesInFinalThird"], "player_keys": ["accurateFinalThirdPasses", "successfulFinalThirdPasses"]},
-    {"label": "Pass Accuracy", "sofascore": "Pass Accuracy", "match_aliases": ["Pass accuracy", "Passing accuracy"], "match_keys": ["passAccuracy", "accuratePassesPercentage"], "player_keys": ["passAccuracy", "accuratePassPercentage", "accuratePassesPercentage"], "suffix": "%"},
-    {"label": "Ball Carries", "sofascore": "Carries", "match_keys": ["ballCarriesCount", "carries"], "player_keys": ["ballCarriesCount", "carries", "totalCarries"]},
-    {"label": "Progressive Carries", "sofascore": "Progressive Carries", "match_keys": ["progressiveBallCarriesCount", "progressiveCarries"], "player_keys": ["progressiveBallCarriesCount", "progressiveCarries"]},
-    {"label": "Progressive Carrying Distance (m)", "sofascore": "Progressive Carrying Distance", "match_keys": ["totalProgressiveBallCarriesDistance", "progressiveCarryingDistance"], "player_keys": ["totalProgressiveBallCarriesDistance", "progressiveCarryingDistance"]},
+    {"label": "Pass Accuracy", "sofascore": "Pass Accuracy", "match_aliases": ["Pass accuracy", "Passing accuracy", "Accurate passes percentage", "Accurate passes %"], "match_keys": ["passAccuracy", "accuratePassesPercentage", "accuratePassPercentage", "passAccuracyPercentage"], "player_keys": ["passAccuracy", "accuratePassPercentage", "accuratePassesPercentage"], "suffix": "%"},
+    {"label": "Ball Carries", "sofascore": "Carries", "match_aliases": ["Ball carries", "Total carries"], "match_keys": ["ballCarriesCount", "ballCarries", "carries", "totalCarries"], "player_keys": ["ballCarriesCount", "ballCarries", "carries", "totalCarries"]},
+    {"label": "Progressive Carries", "sofascore": "Progressive Carries", "match_aliases": ["Progressive carries", "Progressive ball carries"], "match_keys": ["progressiveBallCarriesCount", "progressiveBallCarries", "progressiveCarries"], "player_keys": ["progressiveBallCarriesCount", "progressiveBallCarries", "progressiveCarries"]},
+    {"label": "Progressive Carrying Distance (m)", "sofascore": "Progressive Carrying Distance", "match_aliases": ["Progressive carrying distance", "Progressive carry distance", "Progressive ball carries distance"], "match_keys": ["totalProgressiveBallCarriesDistance", "progressiveBallCarriesDistance", "progressiveCarryingDistance", "progressiveCarryDistance"], "player_keys": ["totalProgressiveBallCarriesDistance", "progressiveBallCarriesDistance", "progressiveCarryingDistance", "progressiveCarryDistance"]},
     {"label": "Accurate Long Passes", "sofascore": "Long Balls", "match_aliases": ["Long balls", "Accurate long balls"], "match_keys": ["accurateLongBalls"], "player_keys": ["accurateLongBalls"]},
     {"label": "Final Third Entries", "sofascore": "Final Third Entries", "match_aliases": ["Final third entries"], "match_keys": ["finalThirdEntries"], "player_keys": ["finalThirdEntries"]},
     {"label": "Accurate Crosses", "sofascore": "Crosses", "match_aliases": ["Accurate crosses"], "match_keys": ["accurateCross", "accurateCrosses"], "player_keys": ["accurateCross", "accurateCrosses"]},
@@ -57,7 +57,6 @@ def metric_key(label: str) -> str:
 
 
 def _norm(value: Any) -> str:
-    """Normalise SofaScore display labels and camelCase provider keys to the same form."""
     text = str(value or "").strip()
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     text = text.replace("&", " and ")
@@ -66,7 +65,6 @@ def _norm(value: Any) -> str:
 
 
 def canonical_match_label(raw_name: str, raw_key: str | None = None) -> str | None:
-    """Map a SofaScore label/key directly onto the Golden MatchLab display label."""
     needles = {_norm(raw_name), _norm(raw_key)} - {""}
     for metric in METRICS:
         candidates = [metric.get("sofascore"), *metric.get("match_aliases", [])]
@@ -87,7 +85,6 @@ def _number(value: Any) -> float | None:
 
 
 def player_metric_value(stats: dict[str, Any], metric: dict[str, Any]) -> float | None:
-    """Read provider-supplied player values only; no metric re-definition/recalculation."""
     for key in metric.get("player_keys", []):
         value = _number(stats.get(key))
         if value is not None:
@@ -125,11 +122,5 @@ def build_canonical_player_rows(stats: dict[str, Any], hide_zero: bool = True) -
         value = player_metric_value(stats, metric)
         if value is None or (hide_zero and value == 0):
             continue
-        rows.append({
-            "key": metric_key(metric["label"]),
-            "label": metric["label"],
-            "display": format_player_metric(stats, metric, value),
-            "rank": value,
-            "value": value,
-        })
+        rows.append({"key": metric_key(metric["label"]), "label": metric["label"], "display": format_player_metric(stats, metric, value), "rank": value, "value": value})
     return rows, stats.get("minutesPlayed")
