@@ -106,6 +106,98 @@ class SofaScoreClient:
             json.dump(data, handle, ensure_ascii=False, indent=2)
         return data
 
+    @staticmethod
+    def _existing_stat_keys(statistics: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        for period in statistics.get("statistics", []) or []:
+            if str(period.get("period", "")).upper() != "ALL":
+                continue
+            for group in period.get("groups", []) or []:
+                for item in group.get("statisticsItems", []) or []:
+                    key = item.get("key")
+                    if key:
+                        keys.add(str(key))
+        return keys
+
+    @staticmethod
+    def _sum_direct_player_key(lineups: dict[str, Any], side: str, aliases: tuple[str, ...]) -> float | None:
+        """Sum a provider field only when SofaScore actually supplied it for players.
+
+        This deliberately does not infer or reverse-engineer a metric. If none of the
+        exact provider aliases is present, None is returned and MatchLab leaves a dash.
+        """
+        total = 0.0
+        found = False
+        for row in (lineups.get(side, {}) or {}).get("players", []) or []:
+            stats = row.get("statistics", {}) or {}
+            for key in aliases:
+                value = stats.get(key)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    total += float(value)
+                    found = True
+                    break
+        return total if found else None
+
+    def _add_direct_team_totals(self, statistics: dict[str, Any], lineups: dict[str, Any]) -> dict[str, Any]:
+        """Expose missing Golden team rows when the same SofaScore stat exists per player.
+
+        SofaScore's match-statistics response and lineup player-statistics response do
+        not expose exactly the same fields. For additive counting/distance metrics, a
+        team total is the direct sum of SofaScore's supplied player values. Existing
+        official team rows always win and are never replaced.
+        """
+        existing = self._existing_stat_keys(statistics)
+        specs: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+            ("Touches", "touches", ("touches", "totalTouches")),
+            ("Key passes", "keyPasses", ("keyPass", "keyPasses")),
+            ("Carries", "ballCarriesCount", ("ballCarriesCount", "ballCarries", "carries", "totalCarries")),
+            ("Progressive carries", "progressiveBallCarriesCount", ("progressiveBallCarriesCount", "progressiveBallCarries", "progressiveCarries")),
+            ("Progressive carrying distance", "totalProgressiveBallCarriesDistance", ("totalProgressiveBallCarriesDistance", "progressiveBallCarriesDistance", "progressiveCarryingDistance", "progressiveCarryDistance")),
+            ("Was fouled", "wasFouled", ("wasFouled",)),
+            ("Assists", "assists", ("goalAssist", "assists")),
+            ("Penalties won", "penaltiesWon", ("penaltyWon", "penaltiesWon")),
+            ("Saves from inside box", "savedShotsFromInsideTheBox", ("savedShotsFromInsideTheBox", "savesFromInsideBox")),
+            ("High claims", "highClaims", ("highClaims", "goodHighClaim")),
+            ("Red cards", "redCards", ("redCards", "redCard", "directRedCards")),
+            ("Def. contribution", "defensiveContribution", ("defensiveContribution",)),
+        )
+
+        synthetic: list[dict[str, Any]] = []
+        for name, key, aliases in specs:
+            if key in existing:
+                continue
+            home = self._sum_direct_player_key(lineups, "home", aliases)
+            away = self._sum_direct_player_key(lineups, "away", aliases)
+            if home is None and away is None:
+                continue
+            # If SofaScore supplied this field for only one side, the other side has no
+            # reliable team value; keep it absent rather than inventing zero.
+            synthetic.append({
+                "name": name,
+                "key": key,
+                "home": home,
+                "away": away,
+                "homeValue": home,
+                "awayValue": away,
+                "statisticsType": "positive",
+                "matchlabSource": "direct-player-total",
+            })
+
+        if not synthetic:
+            return statistics
+
+        all_period = next(
+            (p for p in statistics.get("statistics", []) or [] if str(p.get("period", "")).upper() == "ALL"),
+            None,
+        )
+        if all_period is None:
+            return statistics
+        groups = all_period.setdefault("groups", [])
+        groups.append({"groupName": "MatchLab direct SofaScore totals", "statisticsItems": synthetic})
+        return statistics
+
     def fetch_player_actions(self, event_id: str, lineups: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
         """Optional enrichment only. It is deliberately NOT part of MatchLab's core import path."""
         result: dict[str, Any] = {}
@@ -127,15 +219,12 @@ class SofaScoreClient:
         return result
 
     def fetch_match(self, event_id: str, refresh: bool = False) -> dict[str, Any]:
-        """Fetch only the three provider payloads MatchLab actually needs to populate Studio.
-
-        Keeping the import path to event + statistics + lineups avoids dozens of optional
-        per-player requests from delaying or breaking a normal Load Match operation.
-        """
+        """Fetch the core SofaScore payloads and expose direct player totals where needed."""
         event_id = str(event_id)
         basic = self._fetch_slice(event_id, "basic", f"/event/{event_id}", refresh)
         statistics = self._fetch_slice(event_id, "statistics", f"/event/{event_id}/statistics", refresh)
         lineups = self._fetch_slice(event_id, "lineups", f"/event/{event_id}/lineups", refresh)
+        statistics = self._add_direct_team_totals(statistics, lineups)
         return {
             "basic": basic,
             "statistics": statistics,
