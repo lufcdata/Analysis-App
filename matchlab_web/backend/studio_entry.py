@@ -159,14 +159,27 @@ def studio_match_stats(event_id: str, period: str = Query("full")):
         raise HTTPException(400, "period must be full, first_half or second_half")
 
     match_id = _resolve_match(event_id)
+    provider_home, provider_away = _provider_match_values(event_id, period)
+
+    # Full-match canonical values remain the primary Metrics Bible source.
+    # For 1H/2H, use canonical recalculation only when full-fidelity raw period
+    # events are present. If those raw events are absent, DO NOT estimate or
+    # split full-match values: fall back only to the genuine provider period
+    # block imported for that half. Missing period stats stay missing.
+    canonical_error: str | None = None
     try:
         canonical = get_canonical_match_stats(match_id, period=period)
+        canonical_home = canonical.get("home", {}) or {}
+        canonical_away = canonical.get("away", {}) or {}
+        match_meta = canonical["match"]
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    provider_home, provider_away = _provider_match_values(event_id, period)
-    canonical_home = canonical.get("home", {}) or {}
-    canonical_away = canonical.get("away", {}) or {}
+        if period == "full":
+            raise HTTPException(400, str(exc)) from exc
+        canonical_error = str(exc)
+        full = get_canonical_match_stats(match_id, period="full")
+        canonical_home = {}
+        canonical_away = {}
+        match_meta = full["match"]
 
     home: dict[str, float | None] = {}
     away: dict[str, float | None] = {}
@@ -179,7 +192,7 @@ def studio_match_stats(event_id: str, period: str = Query("full")):
             home[spec.key], away[spec.key], sources[spec.key] = ch, ca, "canonical-v2"
         else:
             home[spec.key], away[spec.key] = provider_home.get(spec.key), provider_away.get(spec.key)
-            sources[spec.key] = "sofascore-period-raw"
+            sources[spec.key] = "provider-period-raw"
         if home[spec.key] is None or away[spec.key] is None:
             missing.append(spec.key)
 
@@ -187,10 +200,14 @@ def studio_match_stats(event_id: str, period: str = Query("full")):
         "event_id": event_id,
         "canonical_match_id": match_id,
         "period": period,
-        "match": canonical["match"],
+        "match": match_meta,
         "home": home,
         "away": away,
-        "availability": {"missing_fields": missing},
+        "availability": {
+            "missing_fields": missing,
+            "canonical_period_available": canonical_error is None,
+            "canonical_period_error": canonical_error,
+        },
         "metric_contract": MATCH_STATS_CONTRACT_VERSION,
         "metric_contract_count": len(MATCH_STATS),
         "metric_sources": sources,
