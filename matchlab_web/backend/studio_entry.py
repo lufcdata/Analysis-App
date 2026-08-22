@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 import unicodedata
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from studio_main import app  # noqa: E402,F401
+from main import DATA_DIR  # noqa: E402
 from v2.match_metric_leaders import metric_catalog  # noqa: E402
 from v2.metric_registry import METRIC_SET_VERSION  # noqa: E402
 
@@ -41,6 +43,29 @@ def _find_local_asset(wanted_slug: str, roots: tuple[Path, ...]) -> Path | None:
             stem = _slug(path.stem)
             if stem == wanted or aliases.get(stem, stem) == wanted:
                 return path
+    return None
+
+
+def _recent_payloads():
+    for path in sorted(DATA_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            yield json.loads(path.read_text())
+        except Exception:
+            continue
+
+
+def _player_team(player_slug: str) -> str | None:
+    wanted = _slug(player_slug)
+    for payload in _recent_payloads():
+        lineups = payload.get('lineups', {}) or {}
+        basic = payload.get('basic', {}) or {}
+        event = basic.get('event', basic)
+        for side in ('home', 'away'):
+            team = event.get(f'{side}Team', {}) or {}
+            for row in (lineups.get(side, {}) or {}).get('players', []) or []:
+                player = row.get('player', {}) or {}
+                if _slug(player.get('name', '')) == wanted:
+                    return str(team.get('name') or '') or None
     return None
 
 
@@ -79,4 +104,11 @@ def player_image(player_slug: str):
     path = _find_local_asset(player_slug, PLAYER_ASSET_ROOTS)
     if path:
         return FileResponse(path)
-    raise HTTPException(404, 'No approved local player image is available.')
+
+    team_name = _player_team(player_slug)
+    if team_name:
+        crest = _find_local_asset(team_name, TEAM_ASSET_ROOTS)
+        if crest:
+            return FileResponse(crest)
+
+    raise HTTPException(404, 'No approved local player image or club crest is available.')
