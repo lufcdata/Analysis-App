@@ -67,13 +67,19 @@ def extract_match_statistics(payload: dict[str, Any], period: str = "ALL") -> li
     for group in selected.get("groups", []) or []:
         for item in group.get("statisticsItems", []) or []:
             raw_name = item.get("name", item.get("key", "Stat"))
-            label = canonical_match_label(str(raw_name))
+            raw_key = item.get("key")
+            label = canonical_match_label(str(raw_name), str(raw_key) if raw_key is not None else None)
             if not label or label in seen:
                 continue
             rows.append({
-                "group": group.get("groupName", "Statistics"), "name": label, "key": item.get("key"),
-                "home": item.get("home"), "away": item.get("away"),
-                "home_value": item.get("homeValue"), "away_value": item.get("awayValue"),
+                "group": group.get("groupName", "Statistics"),
+                "name": label,
+                "source_name": raw_name,
+                "key": raw_key,
+                "home": item.get("home"),
+                "away": item.get("away"),
+                "home_value": item.get("homeValue"),
+                "away_value": item.get("awayValue"),
             })
             seen.add(label)
     return rows
