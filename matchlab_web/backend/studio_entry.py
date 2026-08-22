@@ -19,51 +19,11 @@ from main import DATA_DIR, _load, extract_match_statistics  # noqa: E402
 from v2.canonical_match_stats import get_canonical_match_stats  # noqa: E402
 from v2.match_metric_leaders import metric_catalog  # noqa: E402
 from v2.metric_registry import METRIC_SET_VERSION  # noqa: E402
-
-
-# Locked 21 Aug Matchday Studio Match Stats list. The UI must expose exactly
-# these 33 rows, in this order. Canonical V2 values win wherever the Metrics
-# Bible engine already supplies the metric. Provider rows are used only for
-# genuine match/period values that are not yet emitted by the V2 Match Stats
-# surface; they are never estimated from full-match totals.
-MATCH_STATS_33: tuple[tuple[str, str, str | None], ...] = (
-    ("goals", "Goals", "goals"),
-    ("xg", "xG", None),
-    ("possession", "Possession", "possession"),
-    ("touches", "Touches", "touches"),
-    ("opposition_box_touches", "Opposition Box Touches", "penalty_box_touches"),
-    ("shots", "Shots", "shots"),
-    ("shots_on_target", "Shots On-Target", "shots_on_target"),
-    ("shots_outside_box", "Shots Outside Box", None),
-    ("big_chances", "Big Chances", "big_chances"),
-    ("chances_created", "Chances Created", "chances_created"),
-    ("successful_passes", "Successful Passes", "successful_passes"),
-    ("total_passes", "Total Passes", None),
-    ("successful_final_third_passes", "Successful Final Third Passes", "successful_final_third_passes"),
-    ("pass_accuracy", "Pass Accuracy", "pass_accuracy"),
-    ("ball_carries", "Ball Carries", None),
-    ("progressive_carries", "Progressive Carries", None),
-    ("progressive_carrying_distance_m", "Progressive Carrying Distance (m)", None),
-    ("accurate_long_passes", "Accurate Long Passes", "accurate_long_passes"),
-    ("final_third_entries", "Final Third Entries", None),
-    ("accurate_crosses", "Accurate Crosses", "accurate_crosses"),
-    ("ground_duels_won", "Ground Duels Won", "ground_duels_won"),
-    ("aerial_duels_won", "Aerial Duels Won", "aerial_duels_won"),
-    ("duels_won", "Duels Won", "duels_won"),
-    ("ball_recoveries", "Ball Recoveries", "ball_recoveries"),
-    ("successful_take_ons", "Successful Take-Ons", "successful_take_ons"),
-    ("tackles_won", "Tackles Won", "tackles_won"),
-    ("interceptions", "Interceptions", "interceptions"),
-    ("clearances", "Clearances", "clearances"),
-    ("fouls", "Fouls", None),
-    ("fouled", "Fouled", None),
-    ("possession_lost", "Possession Lost", None),
-    ("corners", "Corners", "corners"),
-    ("saves", "Saves", "saves"),
+from v2.matchday_studio_contract import (  # noqa: E402
+    MATCH_STATS,
+    MATCH_STATS_BY_LABEL,
+    MATCH_STATS_CONTRACT_VERSION,
 )
-
-if len(MATCH_STATS_33) != 33:
-    raise RuntimeError("Matchday Studio Match Stats contract must contain exactly 33 metrics")
 
 
 def _slug(value: str) -> str:
@@ -152,17 +112,16 @@ def _provider_match_values(event_id: str, period: str) -> tuple[dict[str, float 
     rows = extract_match_statistics(payload["statistics"], period=_provider_period(period))
     home: dict[str, float | None] = {}
     away: dict[str, float | None] = {}
-    by_label = {label: key for key, label, _ in MATCH_STATS_33}
     for row in rows:
-        key = by_label.get(str(row.get("name") or ""))
-        if not key:
+        spec = MATCH_STATS_BY_LABEL.get(str(row.get("name") or ""))
+        if not spec:
             continue
-        home[key] = _number(row.get("home_value"))
-        away[key] = _number(row.get("away_value"))
-        if home[key] is None:
-            home[key] = _number(row.get("home"))
-        if away[key] is None:
-            away[key] = _number(row.get("away"))
+        home[spec.key] = _number(row.get("home_value"))
+        away[spec.key] = _number(row.get("away_value"))
+        if home[spec.key] is None:
+            home[spec.key] = _number(row.get("home"))
+        if away[spec.key] is None:
+            away[spec.key] = _number(row.get("away"))
     return home, away
 
 
@@ -185,8 +144,12 @@ def canonical_metrics():
     return {
         "metric_set_version": METRIC_SET_VERSION,
         "live": metric_catalog(),
-        "match_stats": [{"key": key, "label": label} for key, label, _ in MATCH_STATS_33],
-        "match_stats_count": len(MATCH_STATS_33),
+        "match_stats": [
+            {"key": spec.key, "label": spec.label, "percent": spec.percent}
+            for spec in MATCH_STATS
+        ],
+        "match_stats_count": len(MATCH_STATS),
+        "match_stats_contract": MATCH_STATS_CONTRACT_VERSION,
     }
 
 
@@ -209,16 +172,16 @@ def studio_match_stats(event_id: str, period: str = Query("full")):
     away: dict[str, float | None] = {}
     sources: dict[str, str] = {}
     missing: list[str] = []
-    for key, _label, canonical_key in MATCH_STATS_33:
-        ch = canonical_home.get(canonical_key) if canonical_key else None
-        ca = canonical_away.get(canonical_key) if canonical_key else None
-        if canonical_key and ch is not None and ca is not None:
-            home[key], away[key], sources[key] = ch, ca, "canonical-v2"
+    for spec in MATCH_STATS:
+        ch = canonical_home.get(spec.canonical_key) if spec.canonical_key else None
+        ca = canonical_away.get(spec.canonical_key) if spec.canonical_key else None
+        if spec.canonical_key and ch is not None and ca is not None:
+            home[spec.key], away[spec.key], sources[spec.key] = ch, ca, "canonical-v2"
         else:
-            home[key], away[key] = provider_home.get(key), provider_away.get(key)
-            sources[key] = "sofascore-period-raw"
-        if home[key] is None or away[key] is None:
-            missing.append(key)
+            home[spec.key], away[spec.key] = provider_home.get(spec.key), provider_away.get(spec.key)
+            sources[spec.key] = "sofascore-period-raw"
+        if home[spec.key] is None or away[spec.key] is None:
+            missing.append(spec.key)
 
     return {
         "event_id": event_id,
@@ -228,8 +191,8 @@ def studio_match_stats(event_id: str, period: str = Query("full")):
         "home": home,
         "away": away,
         "availability": {"missing_fields": missing},
-        "metric_contract": "matchlab-stats-33-2026-08-21",
-        "metric_contract_count": 33,
+        "metric_contract": MATCH_STATS_CONTRACT_VERSION,
+        "metric_contract_count": len(MATCH_STATS),
         "metric_sources": sources,
         "metric_set_version": METRIC_SET_VERSION,
     }
