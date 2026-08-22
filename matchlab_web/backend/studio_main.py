@@ -23,7 +23,7 @@ from v2.match_metric_leaders import get_match_metric_leaders, metric_catalog
 from v2.metric_registry import BY_KEY, METRIC_SET_VERSION, MetricKind, MetricStatus, approved_for
 from v2.team_logos import logo_url
 
-app = FastAPI(title='MatchLab Studio API', version='2.1.0')
+app = FastAPI(title='MatchLab Studio API', version='2.2.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
 
@@ -103,7 +103,23 @@ def _stored_player(match_id: str, player_id: str) -> dict[str, float | None]:
     return {str(k): (None if v is None else float(v)) for k, v in rows}
 
 
+def _raw_period_available(match_id: str, canonical_period: str) -> bool:
+    """True only when full-fidelity raw WhoScored events exist for this period."""
+    with connection(DEFAULT_DB_PATH, read_only=True) as conn:
+        row = conn.execute(
+            '''SELECT COUNT(*) FROM match_events
+               WHERE match_id=? AND source='whoscored' AND event_type='raw_whoscored' AND period=?''',
+            [match_id, canonical_period],
+        ).fetchone()
+    return bool(row and row[0])
+
+
 def _period_player(match_id: str, player_id: str, team_id: str, period_name: str) -> dict[str, float | None]:
+    if not _raw_period_available(match_id, period_name):
+        raise HTTPException(
+            409,
+            'Half-specific Player Stats are unavailable because this match does not yet contain full-fidelity raw period events. MatchLab will not estimate them from full-match totals.',
+        )
     sig = inspect.signature(calculate_canonical_metrics)
     kwargs: dict[str, Any] = {'surface': 'live', 'player_id': player_id}
     if 'team_id' in sig.parameters:
@@ -134,6 +150,11 @@ def _period_leaders(match_id: str, metric: str, period: str, team_id: str | None
     period_name = PERIODS.get(period)
     if not period_name:
         raise HTTPException(400, 'period must be full, first_half or second_half')
+    if not _raw_period_available(match_id, period_name):
+        raise HTTPException(
+            409,
+            'Half-specific Metric Leaders are unavailable because this match does not yet contain full-fidelity raw period events. MatchLab will not rank players from estimated half values.',
+        )
     with connection(DEFAULT_DB_PATH, read_only=True) as conn:
         params: list[Any] = [METRIC_SET_VERSION, match_id]
         clause = ''
@@ -179,6 +200,23 @@ def base_match(event_id: str):
         'match': match.__dict__,
         'players': [{'id': p.player_id, 'name': p.name, 'team': p.team, 'opponent': p.opponent, 'side': p.side} for p in players],
         'metrics': metric_catalog(),
+        'player_action_streams': len(payload.get('player_actions', {}) or {}),
+    }
+
+
+@app.get('/matches/{event_id}/period-capabilities')
+def period_capabilities(event_id: str):
+    """Tell the UI exactly which period views are honest to enable."""
+    match_id = _resolve_match(event_id)
+    first_raw = _raw_period_available(match_id, 'FirstHalf')
+    second_raw = _raw_period_available(match_id, 'SecondHalf')
+    return {
+        'event_id': event_id,
+        'canonical_match_id': match_id,
+        'match_stats': {'full': True, 'first_half': True, 'second_half': True},
+        'player_stats': {'full': True, 'first_half': first_raw, 'second_half': second_raw},
+        'metric_leaders': {'full': True, 'first_half': first_raw, 'second_half': second_raw},
+        'reason': None if first_raw and second_raw else 'Half-specific player/leader views require full-fidelity raw period events; estimates are forbidden.',
     }
 
 
