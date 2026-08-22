@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # GOLDEN MATCHLAB METRIC MAP.
@@ -56,15 +57,23 @@ def metric_key(label: str) -> str:
 
 
 def _norm(value: Any) -> str:
-    return " ".join(str(value or "").strip().lower().split())
+    """Normalise SofaScore display labels and camelCase provider keys to the same form."""
+    text = str(value or "").strip()
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^A-Za-z0-9]+", " ", text)
+    return " ".join(text.lower().split())
 
 
-def canonical_match_label(raw_name: str) -> str | None:
-    """Map a SofaScore stat label to the Golden MatchLab display label."""
-    needle = _norm(raw_name)
+def canonical_match_label(raw_name: str, raw_key: str | None = None) -> str | None:
+    """Map a SofaScore label/key directly onto the Golden MatchLab display label."""
+    needles = {_norm(raw_name), _norm(raw_key)} - {""}
     for metric in METRICS:
-        names = [metric.get("sofascore"), *metric.get("match_aliases", [])]
-        if any(_norm(name) == needle for name in names if name):
+        candidates = [metric.get("sofascore"), *metric.get("match_aliases", [])]
+        # Provider keys often use camelCase versions of the same SofaScore concept.
+        candidates.extend(metric.get("player_keys", []))
+        candidate_norms = {_norm(name) for name in candidates if name}
+        if needles & candidate_norms:
             return str(metric["label"])
     return None
 
