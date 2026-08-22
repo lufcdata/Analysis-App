@@ -237,7 +237,7 @@ def golden_metrics():
 @app.get("/matches/{event_id}/period-capabilities")
 def period_capabilities(event_id: str):
     payload = _load(event_id)
-    supplied = {code for code, _ in available_match_periods(payload)}
+    supplied = {code for code, _ in available_match_periods(payload["statistics"])}
     return {
         "match_stats": {"full": "ALL" in supplied, "first_half": "1ST" in supplied, "second_half": "2ND" in supplied},
         "player_stats": {"full": True, "first_half": False, "second_half": False},
