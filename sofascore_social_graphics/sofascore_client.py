@@ -135,7 +135,23 @@ class SofaScoreClient:
                     break
         return total if found else None
 
+    @staticmethod
+    def _drop_misleading_team_rows(statistics: dict[str, Any]) -> None:
+        """Remove provider rows whose meaning is narrower than the Golden MatchLab label.
+
+        SofaScore's `dispossessed` team row is not total Possession Lost. MatchLab's
+        Possession Lost is therefore sourced from the sum of player `possessionLostCtrl`
+        values instead.
+        """
+        for period in statistics.get("statistics", []) or []:
+            if str(period.get("period", "")).upper() != "ALL":
+                continue
+            for group in period.get("groups", []) or []:
+                items = group.get("statisticsItems", []) or []
+                group["statisticsItems"] = [item for item in items if str(item.get("key", "")) != "dispossessed"]
+
     def _add_direct_team_totals(self, statistics: dict[str, Any], lineups: dict[str, Any]) -> dict[str, Any]:
+        self._drop_misleading_team_rows(statistics)
         existing = self._existing_stat_keys(statistics)
         specs: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ("Touches", "touches", ("touches", "totalTouches")),
