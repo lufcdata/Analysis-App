@@ -121,11 +121,6 @@ class SofaScoreClient:
 
     @staticmethod
     def _sum_direct_player_key(lineups: dict[str, Any], side: str, aliases: tuple[str, ...]) -> float | None:
-        """Sum a provider field only when SofaScore actually supplied it for players.
-
-        This deliberately does not infer or reverse-engineer a metric. If none of the
-        exact provider aliases is present, None is returned and MatchLab leaves a dash.
-        """
         total = 0.0
         found = False
         for row in (lineups.get(side, {}) or {}).get("players", []) or []:
@@ -141,13 +136,6 @@ class SofaScoreClient:
         return total if found else None
 
     def _add_direct_team_totals(self, statistics: dict[str, Any], lineups: dict[str, Any]) -> dict[str, Any]:
-        """Expose missing Golden team rows when the same SofaScore stat exists per player.
-
-        SofaScore's match-statistics response and lineup player-statistics response do
-        not expose exactly the same fields. For additive counting/distance metrics, a
-        team total is the direct sum of SofaScore's supplied player values. Existing
-        official team rows always win and are never replaced.
-        """
         existing = self._existing_stat_keys(statistics)
         specs: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ("Touches", "touches", ("touches", "totalTouches")),
@@ -156,6 +144,7 @@ class SofaScoreClient:
             ("Progressive carries", "progressiveBallCarriesCount", ("progressiveBallCarriesCount", "progressiveBallCarries", "progressiveCarries")),
             ("Progressive carrying distance", "totalProgressiveBallCarriesDistance", ("totalProgressiveBallCarriesDistance", "progressiveBallCarriesDistance", "progressiveCarryingDistance", "progressiveCarryDistance")),
             ("Was fouled", "wasFouled", ("wasFouled",)),
+            ("Possession lost", "possessionLostCtrl", ("possessionLostCtrl", "possessionLost")),
             ("Assists", "assists", ("goalAssist", "assists")),
             ("Penalties won", "penaltiesWon", ("penaltyWon", "penaltiesWon")),
             ("Saves from inside box", "savedShotsFromInsideTheBox", ("savedShotsFromInsideTheBox", "savesFromInsideBox")),
@@ -172,8 +161,6 @@ class SofaScoreClient:
             away = self._sum_direct_player_key(lineups, "away", aliases)
             if home is None and away is None:
                 continue
-            # If SofaScore supplied this field for only one side, the other side has no
-            # reliable team value; keep it absent rather than inventing zero.
             synthetic.append({
                 "name": name,
                 "key": key,
@@ -199,7 +186,6 @@ class SofaScoreClient:
         return statistics
 
     def fetch_player_actions(self, event_id: str, lineups: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
-        """Optional enrichment only. It is deliberately NOT part of MatchLab's core import path."""
         result: dict[str, Any] = {}
         for side in ("home", "away"):
             for row in (lineups.get(side, {}) or {}).get("players", []) or []:
@@ -219,7 +205,6 @@ class SofaScoreClient:
         return result
 
     def fetch_match(self, event_id: str, refresh: bool = False) -> dict[str, Any]:
-        """Fetch the core SofaScore payloads and expose direct player totals where needed."""
         event_id = str(event_id)
         basic = self._fetch_slice(event_id, "basic", f"/event/{event_id}", refresh)
         statistics = self._fetch_slice(event_id, "statistics", f"/event/{event_id}/statistics", refresh)
