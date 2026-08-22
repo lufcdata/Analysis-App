@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / "sofascore_social_graphics"
@@ -31,7 +31,7 @@ from sofascore_client import SofaScoreClient, SofaScoreError  # noqa: E402
 DATA_DIR = ROOT / "matchlab_web" / "data" / "matches"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="MatchLab API", version="2.0.0")
+app = FastAPI(title="MatchLab API", version="2.0.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,6 +45,7 @@ class MatchBundle(BaseModel):
     basic: dict[str, Any]
     statistics: dict[str, Any]
     lineups: dict[str, Any]
+    player_actions: dict[str, Any] = Field(default_factory=dict)
 
 
 class SofaScoreImportRequest(BaseModel):
@@ -96,9 +97,16 @@ def import_sofascore(request: SofaScoreImportRequest):
         "basic": match_data["basic"],
         "statistics": match_data["statistics"],
         "lineups": match_data["lineups"],
+        # Preserve the genuine per-player action stream for later validation/use.
+        # It is football-data evidence only; it is never an imagery source.
+        "player_actions": match_data.get("player_actions", {}) or {},
     }
     _path(event_id).write_text(json.dumps(payload, ensure_ascii=False))
-    return {"ok": True, "event_id": event_id}
+    return {
+        "ok": True,
+        "event_id": event_id,
+        "player_action_streams": len(payload["player_actions"]),
+    }
 
 
 @app.post("/matches/import")
@@ -138,6 +146,7 @@ def get_match(event_id: str):
             for p in players
         ],
         "metrics": metrics,
+        "player_action_streams": len(payload.get("player_actions", {}) or {}),
     }
 
 
