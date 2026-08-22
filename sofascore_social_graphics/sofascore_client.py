@@ -107,17 +107,18 @@ class SofaScoreClient:
         return data
 
     @staticmethod
-    def _existing_stat_keys(statistics: dict[str, Any]) -> set[str]:
-        keys: set[str] = set()
+    def _all_items(statistics: dict[str, Any]) -> list[dict[str, Any]]:
         for period in statistics.get("statistics", []) or []:
-            if str(period.get("period", "")).upper() != "ALL":
-                continue
-            for group in period.get("groups", []) or []:
-                for item in group.get("statisticsItems", []) or []:
-                    key = item.get("key")
-                    if key:
-                        keys.add(str(key))
-        return keys
+            if str(period.get("period", "")).upper() == "ALL":
+                items: list[dict[str, Any]] = []
+                for group in period.get("groups", []) or []:
+                    items.extend(group.get("statisticsItems", []) or [])
+                return items
+        return []
+
+    @classmethod
+    def _existing_stat_keys(cls, statistics: dict[str, Any]) -> set[str]:
+        return {str(item.get("key")) for item in cls._all_items(statistics) if item.get("key")}
 
     @staticmethod
     def _sum_direct_player_key(lineups: dict[str, Any], side: str, aliases: tuple[str, ...]) -> float | None:
@@ -135,14 +136,27 @@ class SofaScoreClient:
                     break
         return total if found else None
 
+    @classmethod
+    def _find_team_stat(cls, statistics: dict[str, Any], aliases: tuple[str, ...], side: str) -> float | None:
+        wanted = set(aliases)
+        for item in cls._all_items(statistics):
+            if str(item.get("key", "")) not in wanted:
+                continue
+            for value_key in (f"{side}Value", side):
+                value = item.get(value_key)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    return float(value)
+                if isinstance(value, str):
+                    match = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
+                    if match:
+                        return float(match.group(0))
+        return None
+
     @staticmethod
     def _drop_misleading_team_rows(statistics: dict[str, Any]) -> None:
-        """Remove provider rows whose meaning is narrower than the Golden MatchLab label.
-
-        SofaScore's `dispossessed` team row is not total Possession Lost. MatchLab's
-        Possession Lost is therefore sourced from the sum of player `possessionLostCtrl`
-        values instead.
-        """
+        """Prevent narrower SofaScore rows being mistaken for Golden MatchLab metrics."""
         for period in statistics.get("statistics", []) or []:
             if str(period.get("period", "")).upper() != "ALL":
                 continue
@@ -160,7 +174,7 @@ class SofaScoreClient:
             ("Progressive carries", "progressiveBallCarriesCount", ("progressiveBallCarriesCount", "progressiveBallCarries", "progressiveCarries")),
             ("Progressive carrying distance", "totalProgressiveBallCarriesDistance", ("totalProgressiveBallCarriesDistance", "progressiveBallCarriesDistance", "progressiveCarryingDistance", "progressiveCarryDistance")),
             ("Was fouled", "wasFouled", ("wasFouled",)),
-            ("Possession lost", "possessionLostCtrl", ("possessionLostCtrl", "possessionLost")),
+            ("Possession lost", "possessionLostCtrl", ("possessionLostCtrl",)),
             ("Assists", "assists", ("goalAssist", "assists")),
             ("Penalties won", "penaltiesWon", ("penaltyWon", "penaltiesWon")),
             ("Saves from inside box", "savedShotsFromInsideTheBox", ("savedShotsFromInsideTheBox", "savesFromInsideBox")),
@@ -188,17 +202,49 @@ class SofaScoreClient:
                 "matchlabSource": "direct-player-total",
             })
 
-        if not synthetic:
-            return statistics
-
         all_period = next(
             (p for p in statistics.get("statistics", []) or [] if str(p.get("period", "")).upper() == "ALL"),
             None,
         )
         if all_period is None:
             return statistics
-        groups = all_period.setdefault("groups", [])
-        groups.append({"groupName": "MatchLab direct SofaScore totals", "statisticsItems": synthetic})
+        if synthetic:
+            all_period.setdefault("groups", []).append({"groupName": "MatchLab direct SofaScore totals", "statisticsItems": synthetic})
+        return statistics
+
+    def _add_pass_accuracy(self, statistics: dict[str, Any]) -> dict[str, Any]:
+        """Golden Pass Accuracy = Successful Passes / Total Passes * 100."""
+        if "passAccuracy" in self._existing_stat_keys(statistics):
+            return statistics
+
+        home_success = self._find_team_stat(statistics, ("accuratePasses", "accuratePass"), "home")
+        away_success = self._find_team_stat(statistics, ("accuratePasses", "accuratePass"), "away")
+        home_total = self._find_team_stat(statistics, ("passes", "totalPasses", "totalPass"), "home")
+        away_total = self._find_team_stat(statistics, ("passes", "totalPasses", "totalPass"), "away")
+        if home_success is None or away_success is None or not home_total or not away_total:
+            return statistics
+
+        home_accuracy = home_success / home_total * 100.0
+        away_accuracy = away_success / away_total * 100.0
+        all_period = next(
+            (p for p in statistics.get("statistics", []) or [] if str(p.get("period", "")).upper() == "ALL"),
+            None,
+        )
+        if all_period is None:
+            return statistics
+        all_period.setdefault("groups", []).append({
+            "groupName": "MatchLab calculated metrics",
+            "statisticsItems": [{
+                "name": "Pass Accuracy",
+                "key": "passAccuracy",
+                "home": home_accuracy,
+                "away": away_accuracy,
+                "homeValue": home_accuracy,
+                "awayValue": away_accuracy,
+                "statisticsType": "positive",
+                "matchlabSource": "successful-passes-div-total-passes",
+            }],
+        })
         return statistics
 
     def fetch_player_actions(self, event_id: str, lineups: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
@@ -209,13 +255,7 @@ class SofaScoreClient:
                 pid = player.get("id")
                 if not pid:
                     continue
-                data = self._fetch_slice(
-                    str(event_id),
-                    f"actions_{pid}",
-                    f"/event/{event_id}/player/{pid}/rating-breakdown",
-                    refresh,
-                    optional=True,
-                )
+                data = self._fetch_slice(str(event_id), f"actions_{pid}", f"/event/{event_id}/player/{pid}/rating-breakdown", refresh, optional=True)
                 if data:
                     result[str(pid)] = data
         return result
@@ -226,6 +266,7 @@ class SofaScoreClient:
         statistics = self._fetch_slice(event_id, "statistics", f"/event/{event_id}/statistics", refresh)
         lineups = self._fetch_slice(event_id, "lineups", f"/event/{event_id}/lineups", refresh)
         statistics = self._add_direct_team_totals(statistics, lineups)
+        statistics = self._add_pass_accuracy(statistics)
         return {
             "basic": basic,
             "statistics": statistics,
