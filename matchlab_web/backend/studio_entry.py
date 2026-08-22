@@ -25,23 +25,37 @@ def _slug(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', value.lower()).strip('-')
 
 
+def _asset_stem(path: Path) -> str:
+    stem = _slug(path.stem)
+    # The supplied packs use names such as "Joe Rodon Icon.png" and "leeds png.png".
+    stem = re.sub(r'-(icon|icon-v2|icon-2|png)$', '', stem)
+    return stem
+
+
 def _find_local_asset(wanted_slug: str, roots: tuple[Path, ...]) -> Path | None:
     aliases = {
-        'leeds': 'leeds-united',
+        'leeds': 'leeds-united', 'leeds-png': 'leeds-united',
         'brighton': 'brighton-hove-albion',
         'tottenham': 'tottenham-hotspur',
         'west-ham': 'west-ham-united',
         'wolves': 'wolverhampton-wanderers',
+        'man-city': 'manchester-city',
+        'man-utd': 'manchester-united', 'scum': 'manchester-united',
+        'newcastle': 'newcastle-united',
+        'forest': 'nottingham-forest',
     }
     wanted = aliases.get(_slug(wanted_slug), _slug(wanted_slug))
     for root in roots:
         if not root.exists():
             continue
         for path in root.rglob('*'):
-            if not path.is_file() or path.suffix.lower() not in {'.png', '.webp', '.jpg', '.jpeg'}:
+            if not path.is_file() or path.name.startswith('._') or '__MACOSX' in path.parts:
                 continue
-            stem = _slug(path.stem)
-            if stem == wanted or aliases.get(stem, stem) == wanted:
+            if path.suffix.lower() not in {'.png', '.webp', '.jpg', '.jpeg'}:
+                continue
+            stem = _asset_stem(path)
+            normalized = aliases.get(stem, stem)
+            if stem == wanted or normalized == wanted:
                 return path
     return None
 
@@ -85,10 +99,7 @@ PLAYER_ASSET_ROOTS = (
 
 @app.get('/canonical/metrics')
 def canonical_metrics():
-    return {
-        'metric_set_version': METRIC_SET_VERSION,
-        'live': metric_catalog(),
-    }
+    return {'metric_set_version': METRIC_SET_VERSION, 'live': metric_catalog()}
 
 
 @app.get('/team-logos/{team_slug}.png')
@@ -101,6 +112,8 @@ def team_logo(team_slug: str):
 
 @app.get('/player-images/{player_slug}.png')
 def player_image(player_slug: str):
+    # Strict image policy: approved local player photo first, then approved local club crest.
+    # There is deliberately no SofaScore/CDN image fallback here.
     path = _find_local_asset(player_slug, PLAYER_ASSET_ROOTS)
     if path:
         return FileResponse(path)
